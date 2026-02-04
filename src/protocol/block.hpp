@@ -3,10 +3,10 @@
 #include <optional>
 #include <array>
 #include <cstdint>
+#include "codec/bincode2.hpp"
 #include "transaction.hpp"
 #include "address_inclusion_filter.hpp"
 #include "hash.hpp"
-#include "codec/bincode2.hpp"
 
 namespace scrig::protocol {
 
@@ -36,8 +36,8 @@ struct Block {
 
     void bincode2_encode(scrig::codec::Bincode2Writer& w) const {
         w.vec(transactions);
-        w.u64_le(timestamp);
-        w.u64_le(nonce);
+        w.u64(timestamp);
+        w.u64(nonce);
         w.encode(meta);
     }
 };

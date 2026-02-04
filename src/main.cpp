@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include "protocol/hashing_buffer.hpp"
 
 int main() {
@@ -19,7 +20,16 @@ int main() {
 
     auto buf = get_block_hashing_buffer(block);
 
-    std::cout << "hashing buffer size: " << buf.size() << std::endl;
+    std::cout << "C++ hashing buffer (" << buf.size() << " bytes):\n";
+    for (size_t i = 0; i < buf.size(); i++) {
+        std::cout
+            << std::hex
+            << std::setw(2)
+            << std::setfill('0')
+            << (int)buf[i]
+            << " ";
+    }
+    std::cout << std::dec << "\n";
 
     return 0;
 }

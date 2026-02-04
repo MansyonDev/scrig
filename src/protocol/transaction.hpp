@@ -2,9 +2,9 @@
 #include <vector>
 #include <optional>
 #include <cstdint>
+#include "codec/bincode2.hpp"
 #include "hash.hpp"
 #include "keys.hpp"
-#include "codec/bincode2.hpp"
 
 namespace scrig::protocol {
 
@@ -34,7 +34,7 @@ struct TransactionOutput {
     Public32 receiver;
 
     void bincode2_encode(scrig::codec::Bincode2Writer& w) const {
-        w.u64_le(amount);
+        w.u64(amount);
         w.encode(receiver);
     }
 };
@@ -50,8 +50,8 @@ struct Transaction {
         w.vec(inputs);
         w.vec(outputs);
         w.option(transaction_id);
-        w.u64_le(nonce);
-        w.u64_le(timestamp);
+        w.u64(nonce);
+        w.u64(timestamp);
     }
 };
 

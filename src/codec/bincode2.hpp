@@ -11,17 +11,6 @@ struct Bincode2Writer {
 
     void u8(std::uint8_t v) { out.push_back(v); }
 
-    void u32_le(std::uint32_t v) {
-        out.push_back(v & 0xFF);
-        out.push_back((v >> 8) & 0xFF);
-        out.push_back((v >> 16) & 0xFF);
-        out.push_back((v >> 24) & 0xFF);
-    }
-
-    void u64_le(std::uint64_t v) {
-        for (int i = 0; i < 8; ++i) out.push_back((v >> (8 * i)) & 0xFF);
-    }
-
     void var_u64(std::uint64_t v) {
         while (v >= 0x80) {
             out.push_back(static_cast<std::uint8_t>(v) | 0x80);
@@ -30,6 +19,8 @@ struct Bincode2Writer {
         out.push_back(static_cast<std::uint8_t>(v));
     }
 
+    void u64(std::uint64_t v) { var_u64(v); }
+    void u32(std::uint32_t v) { var_u64(static_cast<std::uint64_t>(v)); }
     void usize(std::size_t v) { var_u64(static_cast<std::uint64_t>(v)); }
 
     template<typename T>

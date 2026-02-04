@@ -13,7 +13,7 @@ struct AddressInclusionFilter {
     void bincode2_encode(scrig::codec::Bincode2Writer& w) const {
         w.vec(bits);
         w.usize(num_bits);
-        w.u32_le(num_hashes);
+        w.u32(num_hashes);
     }
 };
 
