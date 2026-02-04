@@ -1,35 +1,21 @@
+#include <randomx.h>
 #include <iostream>
-#include <iomanip>
-#include "protocol/hashing_buffer.hpp"
 
 int main() {
-    using namespace scrig::protocol;
+    randomx_flags flags = randomx_get_flags();
+    randomx_cache* cache = randomx_alloc_cache(flags);
 
-    Block block{};
-    block.timestamp = 0;
-    block.nonce = 0;
+    const char* seed = "test seed";
+    randomx_init_cache(cache, seed, strlen(seed));
 
-    block.meta.block_pow_difficulty.fill(0);
-    block.meta.tx_pow_difficulty.fill(0);
-    block.meta.previous_block.bytes.fill(0);
-    block.meta.merkle_tree_root.fill(0);
+    randomx_vm* vm = randomx_create_vm(flags, cache, nullptr);
 
-    block.meta.address_inclusion_filter.bits.clear();
-    block.meta.address_inclusion_filter.num_bits = 0;
-    block.meta.address_inclusion_filter.num_hashes = 0;
+    uint8_t hash[32];
+    const char* input = "hello";
+    randomx_calculate_hash(vm, input, strlen(input), hash);
 
-    auto buf = get_block_hashing_buffer(block);
+    std::cout << "RandomX OK. Hash[0] = " << (int)hash[0] << std::endl;
 
-    std::cout << "C++ hashing buffer (" << buf.size() << " bytes):\n";
-    for (size_t i = 0; i < buf.size(); i++) {
-        std::cout
-            << std::hex
-            << std::setw(2)
-            << std::setfill('0')
-            << (int)buf[i]
-            << " ";
-    }
-    std::cout << std::dec << "\n";
-
-    return 0;
+    randomx_destroy_vm(vm);
+    randomx_release_cache(cache);
 }
