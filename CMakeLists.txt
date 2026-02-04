@@ -4,34 +4,22 @@ project(scrig LANGUAGES C CXX ASM_MASM)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-
-set(RANDOMX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(RANDOMX_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
-set(RANDOMX_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-
 find_package(OpenSSL REQUIRED)
 
-add_subdirectory(external/randomx EXCLUDE_FROM_ALL)
-
-if (MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-    target_sources(randomx PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/randomx/src/jit_compiler_x86_static.asm
-    )
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/external/randomx/src/jit_compiler_x86_static.asm
-        PROPERTIES LANGUAGE ASM_MASM
-    )
-endif()
+add_subdirectory(external/randomx)
 
 add_executable(scrig
     src/main.cpp
+    src/node_client.cpp
+    src/miner.cpp
     src/protocol/hashing_buffer.cpp
 )
 
 target_include_directories(scrig PRIVATE
     src
+    src/protocol
     external/randomx/src
+    ${OPENSSL_INCLUDE_DIR}
 )
 
 target_link_libraries(scrig PRIVATE
