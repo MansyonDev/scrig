@@ -1,21 +1,25 @@
-#include <randomx.h>
 #include <iostream>
+#include <thread>
+#include <array>
+#include <cstdint>
+
+#include "util/time.hpp"
+#include "rx/randomx_wrap.hpp"
 
 int main() {
-    randomx_flags flags = randomx_get_flags();
-    randomx_cache* cache = randomx_alloc_cache(flags);
+    std::cout << "scrig starting...\n";
 
-    const char* seed = "test seed";
-    randomx_init_cache(cache, seed, strlen(seed));
+    uint64_t t1 = scrig::util::unix_time_millis();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    uint64_t t2 = scrig::util::unix_time_millis();
 
-    randomx_vm* vm = randomx_create_vm(flags, cache, nullptr);
+    std::cout << "time diff ms: " << (t2 - t1) << "\n";
 
-    uint8_t hash[32];
-    const char* input = "hello";
-    randomx_calculate_hash(vm, input, strlen(input), hash);
+    scrig::rx::RandomX::init(false);
 
-    std::cout << "RandomX OK. Hash[0] = " << (int)hash[0] << std::endl;
+    const std::array<std::uint8_t, 4> msg{ 't','e','s','t' };
+    auto h = scrig::rx::RandomX::hash(msg);
+    std::cout << "hash[0]: " << int(h[0]) << "\n";
 
-    randomx_destroy_vm(vm);
-    randomx_release_cache(cache);
+    return 0;
 }
