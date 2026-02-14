@@ -139,13 +139,13 @@ std::string human_hashrate(double rate) {
 
 void render_dashboard(const UiSnapshot& s, bool colorful) {
   static bool initialized = false;
+  static bool log_cursor_initialized = false;
   static size_t rendered_log_lines = 0;
 
   if (!initialized) {
     std::cout << "\x1b[2J";
     initialized = true;
   }
-  std::cout << "\x1b[H";
 
   const std::string title = colorize(" SCRIG - Snap Coin Miner ", "\x1b[1;36m", colorful);
   const std::string status = colorize(" " + s.status + " ", "\x1b[1;32m", colorful);
@@ -211,21 +211,25 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
     kInnerWidth) + "|");
   rows.push_back(box_border());
 
+  // Keep the top dashboard fixed while letting logs append naturally below.
+  std::cout << "\x1b" "7";
   for (size_t i = 0; i < rows.size(); ++i) {
     write_fixed_row(i + 1, rows[i]);
   }
   write_fixed_row(kLogHeaderRow, "Runtime Log (scrollable)");
   write_fixed_row(kLogSeparatorRow, std::string(kInnerWidth, '-'));
+  std::cout << "\x1b" "8";
 
-  if (rendered_log_lines > s.log_lines.size()) {
+  if (!log_cursor_initialized || rendered_log_lines > s.log_lines.size()) {
+    std::cout << "\x1b[" << kLogStartRow << ";1H";
     rendered_log_lines = 0;
+    log_cursor_initialized = true;
   }
+
   for (size_t i = rendered_log_lines; i < s.log_lines.size(); ++i) {
-    write_fixed_row(kLogStartRow + i, "- " + s.log_lines[i]);
+    std::cout << "- " << s.log_lines[i] << '\n';
   }
   rendered_log_lines = s.log_lines.size();
-
-  std::cout << "\x1b[" << (kLogStartRow + rendered_log_lines) << ";1H";
 
   std::cout.flush();
 }
