@@ -174,29 +174,43 @@ cmake --build build -j
 
 ## First Run + Config
 
-On first launch, scrig creates `config.json`.
+On first launch, scrig creates `config.json` in the current working directory.
 
-- The file is generated for your OS profile.
-- Unsupported optimization keys are omitted.
-- Unsupported runtime flags are auto-disabled and saved back.
+Rules for every OS:
+- Config is generated for the current OS profile.
+- Unsupported optimization keys are omitted from the file.
+- Unsupported runtime flags are auto-disabled and saved back automatically.
+- Wallet must be raw base36 address text only (no wrappers).
 
-### Important
-
-Set wallet as raw base36 address string only.
-
-Correct:
+Correct wallet format:
 ```json
 "wallet_address": "2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95ghmct1wkv"
 ```
 
-Wrong:
+Wrong wallet format:
 ```json
 "wallet_address": "<wallet>"
 "wallet_address": "(wallet)"
 ```
 
-### Example (macOS profile)
+### macOS
 
+First run (release binary):
+```bash
+./scrig
+```
+
+First run (source build):
+```bash
+./build/scrig
+```
+
+Edit config:
+```bash
+open -a TextEdit config.json
+```
+
+Typical macOS-generated config:
 ```json
 {
   "_config_comment": "macOS Specific Config",
@@ -204,7 +218,6 @@ Wrong:
   "_note": "Set wallet_address before mining.",
 
   "wallet_address": "<PUT_YOUR_WALLET_ADDRESS>",
-
   "mode": "solo",
 
   "node_host": "127.0.0.1",
@@ -223,6 +236,105 @@ Wrong:
   "randomx_hard_aes": true,
   "randomx_secure": true,
   "randomx_macos_unsafe": true,
+
+  "colorful_ui": true,
+  "dashboard": true
+}
+```
+
+### Windows
+
+First run (release binary):
+```powershell
+.\scrig.exe
+```
+
+First run (source build):
+```powershell
+.\build\Release\scrig.exe
+```
+
+Edit config:
+```powershell
+notepad .\config.json
+```
+
+Typical Windows-generated config:
+```json
+{
+  "_config_comment": "Windows Specific Config",
+  "_profile": "windows-performance",
+  "_note": "Set wallet_address before mining.",
+
+  "wallet_address": "<PUT_YOUR_WALLET_ADDRESS>",
+  "mode": "solo",
+
+  "node_host": "127.0.0.1",
+  "node_port": 3003,
+  "pool_host": "127.0.0.1",
+  "pool_port": 3003,
+
+  "threads": 0,
+  "include_mempool_transactions": true,
+  "refresh_interval_ms": 500,
+  "use_chain_events": true,
+
+  "pin_threads": true,
+  "randomx_full_mem": true,
+  "randomx_huge_pages": false,
+  "randomx_jit": true,
+  "randomx_hard_aes": true,
+  "randomx_secure": false,
+
+  "colorful_ui": true,
+  "dashboard": true
+}
+```
+
+### Linux
+
+First run (release binary):
+```bash
+./scrig
+```
+
+First run (source build):
+```bash
+./build/scrig
+```
+
+Edit config:
+```bash
+nano config.json
+```
+
+Typical Linux-generated config:
+```json
+{
+  "_config_comment": "Linux Specific Config",
+  "_profile": "linux-performance",
+  "_note": "Set wallet_address before mining.",
+
+  "wallet_address": "<PUT_YOUR_WALLET_ADDRESS>",
+  "mode": "solo",
+
+  "node_host": "127.0.0.1",
+  "node_port": 3003,
+  "pool_host": "127.0.0.1",
+  "pool_port": 3003,
+
+  "threads": 0,
+  "include_mempool_transactions": true,
+  "refresh_interval_ms": 500,
+  "use_chain_events": true,
+
+  "pin_threads": true,
+  "numa_bind": false,
+  "randomx_full_mem": true,
+  "randomx_huge_pages": false,
+  "randomx_jit": true,
+  "randomx_hard_aes": true,
+  "randomx_secure": false,
 
   "colorful_ui": true,
   "dashboard": true
@@ -328,4 +440,10 @@ cmake --build build -j
 
 ## Donate
 
-`2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95qhmct1wkv`
+Snap Coin : `2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95qhmct1wkv`
+
+Bitcoin : `bc1ql2qvl40qwrlrr4f6lrtmlkut4gmnhz3svm6ssq`
+
+Ethereum : `0xe4937cEf33F76644e9099CC9f89cC2f019AA95e1`
+
+Solana : `FnFmo1826UdUhivzw871Tgu4MWUaLvn4fzy8eoJDRf89`
