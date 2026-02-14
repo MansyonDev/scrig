@@ -8,7 +8,7 @@
 namespace scrig {
 
 struct Config {
-  std::string wallet_address = "<YOUR_PUBLIC_WALLET_ADDRESS_BASE36>";
+  std::string wallet_address = "<PUT_YOUR_WALLET_ADDRESS>";
 
   std::string node_host = "127.0.0.1";
   uint16_t node_port = 3003;
@@ -36,6 +36,7 @@ struct Config {
 };
 
 Config load_or_create_config(const std::filesystem::path& path, bool& created_default);
+void save_config(const std::filesystem::path& path, const Config& config);
 void validate_config(const Config& config);
 
 } // namespace scrig

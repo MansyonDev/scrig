@@ -305,6 +305,11 @@ std::vector<std::string> sanitize_runtime_config(scrig::Config& config) {
   if (config.randomx_huge_pages && !scrig::huge_pages_supported_on_platform()) {
     config.randomx_huge_pages = false;
     notes.push_back("randomx_huge_pages disabled: huge pages are not supported on this platform");
+  } else if (config.randomx_huge_pages &&
+             scrig::can_detect_huge_pages_configuration() &&
+             !scrig::huge_pages_configured()) {
+    config.randomx_huge_pages = false;
+    notes.push_back("randomx_huge_pages disabled: huge pages are not configured on this host");
   }
 
 #if defined(__APPLE__)
@@ -378,6 +383,7 @@ int main(int argc, char** argv) {
     }
 
     const auto tuning_notes = sanitize_runtime_config(config);
+    scrig::save_config(cli.config_path, config);
     scrig::validate_config(config);
 
     if (cli.validate_only) {
@@ -415,6 +421,9 @@ int main(int argc, char** argv) {
       miner.add_runtime_note("Controls: h=hashrate, p=pause, r=resume, q=quit");
     } else {
       miner.add_runtime_note("Hotkey unavailable: " + hotkey_error + ". Use Ctrl+C to quit.");
+    }
+    for (const auto& note : tuning_notes) {
+      miner.add_runtime_note("Auto-tuning: " + note);
     }
     if (!config.dashboard) {
       if (hotkey_enabled) {

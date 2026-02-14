@@ -5,11 +5,11 @@
 #include "scrig/ui.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <limits>
 #include <mutex>
-#include <random>
 #include <stdexcept>
 #include <thread>
 
@@ -47,6 +47,22 @@ std::vector<Transaction> filter_mempool(const std::vector<Transaction>& mempool)
   }
 
   return out;
+}
+
+constexpr uint64_t kHashFlushBatch = 512;
+constexpr std::chrono::milliseconds kHashFlushInterval{500};
+
+std::atomic<uint64_t> g_nonce_seed{0x9E3779B97F4A7C15ULL};
+
+uint64_t next_nonce_base() {
+  // SplitMix64-style generator, cheap and deterministic enough for nonce spacing.
+  uint64_t x = g_nonce_seed.fetch_add(0x9E3779B97F4A7C15ULL, std::memory_order_relaxed);
+  x ^= x >> 30U;
+  x *= 0xBF58476D1CE4E5B9ULL;
+  x ^= x >> 27U;
+  x *= 0x94D049BB133111EBULL;
+  x ^= x >> 31U;
+  return 0x100000000ULL | (x & 0xFFFFFFFFULL);
 }
 
 } // namespace
@@ -241,8 +257,7 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
         nonce += thread_count;
 
         const auto now = std::chrono::steady_clock::now();
-        if (local_hashes >= 64 ||
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush).count() >= 250) {
+        if (local_hashes >= kHashFlushBatch || (now - last_flush) >= kHashFlushInterval) {
           total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
           local_hashes = 0;
           last_flush = now;
@@ -331,9 +346,7 @@ Miner::MiningJob Miner::build_solo_job(NodeClient& client) {
   job.block = std::move(block);
   job.target = calculate_block_difficulty_target(job.block.meta.block_pow_difficulty, job.block.transactions.size());
   job.block_pow_template = block_pow_buffer(job.block, &job.block_nonce_offset);
-  std::random_device rd;
-  std::mt19937_64 rng(rd());
-  job.base_nonce = 0x100000000ULL | (rng() & 0xFFFFFFFFULL);
+  job.base_nonce = next_nonce_base();
   return job;
 }
 
@@ -348,9 +361,7 @@ Miner::MiningJob Miner::build_pool_job(const Block& pool_block, const Difficulty
   job.block = std::move(block);
   job.target = pool_difficulty;
   job.block_pow_template = block_pow_buffer(job.block, &job.block_nonce_offset);
-  std::random_device rd;
-  std::mt19937_64 rng(rd());
-  job.base_nonce = 0x100000000ULL | (rng() & 0xFFFFFFFFULL);
+  job.base_nonce = next_nonce_base();
 
   current_difficulty_.store(target_to_display_difficulty(pool_difficulty), std::memory_order_relaxed);
   return job;
@@ -426,8 +437,7 @@ void Miner::mine_reward_transaction(Block& block) {
           nonce += thread_count;
 
           const auto now = std::chrono::steady_clock::now();
-          if (local_hashes >= 64 ||
-              std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush).count() >= 250) {
+          if (local_hashes >= kHashFlushBatch || (now - last_flush) >= kHashFlushInterval) {
             total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
             local_hashes = 0;
             last_flush = now;
@@ -1051,7 +1061,10 @@ void Miner::run() {
         }
 
         if (!logged_initial) {
-          push_log("Wallet balance tracking enabled");
+          push_log(
+            "Wallet balance tracking enabled: node=" +
+            config_.node_host + ":" + std::to_string(config_.node_port) +
+            " address=" + config_.wallet_address);
           logged_initial = true;
         }
         unavailable_reported = false;

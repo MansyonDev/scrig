@@ -18,6 +18,32 @@
 
 namespace scrig {
 
+#ifdef _WIN32
+bool windows_large_page_privilege_enabled() {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    return false;
+  }
+
+  LUID luid{};
+  if (!LookupPrivilegeValue(nullptr, SE_LOCK_MEMORY_NAME, &luid)) {
+    CloseHandle(token);
+    return false;
+  }
+
+  PRIVILEGE_SET required{};
+  required.PrivilegeCount = 1;
+  required.Control = PRIVILEGE_SET_ALL_NECESSARY;
+  required.Privilege[0].Luid = luid;
+  required.Privilege[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+  BOOL has_privilege = FALSE;
+  const BOOL ok = PrivilegeCheck(token, &required, &has_privilege);
+  CloseHandle(token);
+  return ok == TRUE && has_privilege == TRUE;
+}
+#endif
+
 uint32_t logical_cpu_count() {
   const auto hw = std::thread::hardware_concurrency();
   return hw == 0 ? 1U : hw;
@@ -107,6 +133,8 @@ bool huge_pages_supported_on_platform() {
 bool can_detect_huge_pages_configuration() {
 #ifdef __linux__
   return true;
+#elif defined(_WIN32)
+  return true;
 #else
   return false;
 #endif
@@ -121,6 +149,8 @@ bool huge_pages_configured() {
   uint64_t pages = 0;
   in >> pages;
   return pages >= 2000;
+#elif defined(_WIN32)
+  return GetLargePageMinimum() > 0 && windows_large_page_privilege_enabled();
 #else
   return false;
 #endif

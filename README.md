@@ -51,10 +51,15 @@ Runtime control:
 ## Config
 
 Generated automatically as `config.json` if missing.
+The file is OS-profiled on generation (`_profile`) and rewritten in normalized order on startup.
+Unsupported flags for the current OS are auto-disabled and persisted back to `config.json`.
+Platform-incompatible optimization keys are omitted entirely from the written file.
 
 ```json
 {
+  "_config_comment": "Linux Specific Config",
   "_note": "Set wallet_address before mining.",
+  "_profile": "linux-performance",
 
   "wallet_address": "<YOUR_PUBLIC_WALLET_ADDRESS_BASE36>",
 

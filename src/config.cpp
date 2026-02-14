@@ -1,6 +1,7 @@
 #include "scrig/config.hpp"
 
 #include "scrig/json.hpp"
+#include "scrig/perf.hpp"
 #include "scrig/types.hpp"
 
 #include <fstream>
@@ -14,9 +15,73 @@ namespace {
 
 Config default_config() {
   Config config;
-  const auto hw = std::thread::hardware_concurrency();
-  config.threads = hw == 0 ? 1U : hw;
+  config.threads = 0;
+  config.pin_threads = thread_pinning_supported();
+  config.numa_bind = numa_binding_supported() && numa_detected();
+  config.randomx_huge_pages = huge_pages_supported_on_platform() &&
+    (!can_detect_huge_pages_configuration() || huge_pages_configured());
+  config.use_chain_events = true;
+  config.randomx_hard_aes = true;
+  config.randomx_secure = false;
+  config.randomx_macos_unsafe = false;
+  config.include_mempool_transactions = true;
+
+#if defined(__APPLE__)
+  config.include_mempool_transactions = false;
+  config.randomx_jit = true;
+  config.randomx_full_mem = true;
+  config.randomx_secure = true;
+  config.randomx_macos_unsafe = true;
+#else
+  config.randomx_jit = true;
+  config.randomx_full_mem = true;
+#endif
+
   return config;
+}
+
+const char* platform_profile_name() {
+#if defined(__APPLE__)
+  return "macos-stable";
+#elif defined(_WIN32)
+  return "windows-performance";
+#elif defined(__linux__)
+  return "linux-performance";
+#else
+  return "generic";
+#endif
+}
+
+const char* platform_config_comment() {
+#if defined(__APPLE__)
+  return "macOS Specific Config";
+#elif defined(_WIN32)
+  return "Windows Specific Config";
+#elif defined(__linux__)
+  return "Linux Specific Config";
+#else
+  return "Generic OS Config";
+#endif
+}
+
+bool include_pin_threads_key() {
+  return thread_pinning_supported();
+}
+
+bool include_numa_bind_key() {
+  return numa_binding_supported();
+}
+
+bool include_randomx_huge_pages_key() {
+  return huge_pages_supported_on_platform();
+}
+
+bool include_randomx_macos_unsafe_key() {
+#if defined(__APPLE__)
+  return true;
+#else
+  return false;
+#endif
 }
 
 std::string json_scalar(const std::string& value) {
@@ -42,6 +107,8 @@ std::string config_to_json_text(const Config& config) {
   std::ostringstream out;
   out << "{\n";
 
+  write_field(out, "_config_comment", json_scalar(platform_config_comment()));
+  write_field(out, "_profile", json_scalar(platform_profile_name()));
   write_field(out, "_note", json_scalar("Set wallet_address before mining."));
   out << '\n';
 
@@ -63,14 +130,22 @@ std::string config_to_json_text(const Config& config) {
   write_field(out, "use_chain_events", json_bool(config.use_chain_events));
   out << '\n';
 
-  write_field(out, "pin_threads", json_bool(config.pin_threads));
-  write_field(out, "numa_bind", json_bool(config.numa_bind));
+  if (include_pin_threads_key()) {
+    write_field(out, "pin_threads", json_bool(config.pin_threads));
+  }
+  if (include_numa_bind_key()) {
+    write_field(out, "numa_bind", json_bool(config.numa_bind));
+  }
   write_field(out, "randomx_full_mem", json_bool(config.randomx_full_mem));
-  write_field(out, "randomx_huge_pages", json_bool(config.randomx_huge_pages));
+  if (include_randomx_huge_pages_key()) {
+    write_field(out, "randomx_huge_pages", json_bool(config.randomx_huge_pages));
+  }
   write_field(out, "randomx_jit", json_bool(config.randomx_jit));
   write_field(out, "randomx_hard_aes", json_bool(config.randomx_hard_aes));
   write_field(out, "randomx_secure", json_bool(config.randomx_secure));
-  write_field(out, "randomx_macos_unsafe", json_bool(config.randomx_macos_unsafe));
+  if (include_randomx_macos_unsafe_key()) {
+    write_field(out, "randomx_macos_unsafe", json_bool(config.randomx_macos_unsafe));
+  }
   out << '\n';
 
   write_field(out, "colorful_ui", json_bool(config.colorful_ui));
@@ -150,8 +225,18 @@ Config load_or_create_config(const std::filesystem::path& path, bool& created_de
   return config;
 }
 
+void save_config(const std::filesystem::path& path, const Config& config) {
+  std::ofstream out(path);
+  if (!out) {
+    throw std::runtime_error("failed to write config file: " + path.string());
+  }
+  out << config_to_json_text(config) << '\n';
+}
+
 void validate_config(const Config& config) {
-  if (config.wallet_address.empty() || config.wallet_address == "<YOUR_PUBLIC_WALLET_ADDRESS_BASE36>") {
+  if (config.wallet_address.empty() ||
+      config.wallet_address == "<PUT_YOUR_WALLET_ADDRESS>" ||
+      config.wallet_address == "<YOUR_PUBLIC_WALLET_ADDRESS_BASE36>") {
     throw std::runtime_error("config wallet_address is missing");
   }
   try {

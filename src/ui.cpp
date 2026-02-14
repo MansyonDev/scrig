@@ -148,6 +148,8 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
   }
 
   const std::string title = colorize(" SCRIG - Snap Coin Miner ", "\x1b[1;36m", colorful);
+  const std::string donate =
+    colorize("Donate the Dev: 2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95qhmct1wkv", "\x1b[1;33m", colorful);
   const std::string status = colorize(" " + s.status + " ", "\x1b[1;32m", colorful);
   std::unordered_map<std::string, bool> opt_map;
   opt_map.reserve(s.optimizations.size());
@@ -158,7 +160,7 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
   std::vector<std::string> rows;
   rows.reserve(kTopRows);
   rows.push_back(box_border());
-  rows.push_back("|" + pad_right_visible(title, kInnerWidth) + "|");
+  rows.push_back("|" + pad_right_visible(title + "  " + donate, kInnerWidth) + "|");
   rows.push_back(box_border());
 
   rows.push_back("|" + pad_right_visible(
@@ -187,12 +189,12 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
     kInnerWidth) + "|");
   if (s.wallet_balance_available) {
     rows.push_back("|" + pad_right_visible(
-      " Wallet: " + snap_amount(s.wallet_balance_nano) +
+      " Wallet (node): " + snap_amount(s.wallet_balance_nano) +
       " SNAP    Session Net: " + snap_delta(s.wallet_delta_nano) + " SNAP",
       kInnerWidth) + "|");
   } else {
     rows.push_back("|" + pad_right_visible(
-      " Wallet: n/a (node balance unavailable)",
+      " Wallet (node): n/a (node balance unavailable)",
       kInnerWidth) + "|");
   }
 
