@@ -57,6 +57,13 @@ Miner::Miner(Config config)
 
 void Miner::request_stop() {
   stop_.store(true, std::memory_order_relaxed);
+  work_quit_.store(true, std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    work_stop_ = true;
+  }
+  work_cv_.notify_all();
+  work_done_cv_.notify_all();
 }
 
 void Miner::add_runtime_note(std::string note) {
@@ -71,6 +78,171 @@ void Miner::push_log(std::string line) {
 void Miner::set_status(const std::string& status) {
   std::lock_guard<std::mutex> lock(status_mutex_);
   status_ = status;
+}
+
+void Miner::ensure_mining_workers_started() {
+  if (!mining_workers_.empty()) {
+    return;
+  }
+
+  const uint32_t thread_count = std::max<uint32_t>(1U, config_.threads);
+  work_quit_.store(false, std::memory_order_relaxed);
+  work_found_.store(false, std::memory_order_relaxed);
+
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    work_stop_ = false;
+    work_active_ = false;
+    work_finished_ = false;
+    workers_completed_ = 0;
+    work_error_ = nullptr;
+    active_cancel_signal_ = nullptr;
+  }
+
+  try {
+    mining_workers_.reserve(thread_count);
+    for (uint32_t worker_id = 0; worker_id < thread_count; ++worker_id) {
+      mining_workers_.emplace_back([this, worker_id, thread_count]() {
+        mining_worker_loop(worker_id, thread_count);
+      });
+    }
+  } catch (...) {
+    stop_mining_workers();
+    throw;
+  }
+}
+
+void Miner::stop_mining_workers() {
+  if (mining_workers_.empty()) {
+    return;
+  }
+
+  work_quit_.store(true, std::memory_order_relaxed);
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    work_stop_ = true;
+    work_active_ = false;
+    work_finished_ = true;
+    active_cancel_signal_ = nullptr;
+  }
+
+  work_cv_.notify_all();
+  work_done_cv_.notify_all();
+
+  for (auto& worker : mining_workers_) {
+    if (worker.joinable()) {
+      worker.join();
+    }
+  }
+  mining_workers_.clear();
+}
+
+void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
+  if (config_.pin_threads) {
+    (void)pin_current_thread(worker_id, thread_count);
+  }
+  if (config_.numa_bind) {
+    (void)bind_current_thread_numa(worker_id, thread_count);
+  }
+
+  uint64_t observed_generation = 0;
+  while (true) {
+    MiningJob job;
+    std::atomic<bool>* cancel_signal = nullptr;
+    uint64_t work_generation = 0;
+
+    {
+      std::unique_lock<std::mutex> lock(work_mutex_);
+      work_cv_.wait(lock, [&]() {
+        return work_stop_ || work_generation_ != observed_generation;
+      });
+      if (work_stop_) {
+        return;
+      }
+
+      observed_generation = work_generation_;
+      work_generation = work_generation_;
+      job = active_job_;
+      cancel_signal = active_cancel_signal_;
+    }
+
+    uint64_t local_hashes = 0;
+    auto last_flush = std::chrono::steady_clock::now();
+
+    try {
+      auto local_buffer = job.block_pow_template;
+      uint64_t nonce = job.base_nonce + worker_id;
+      const bool fast_nonce_patch = patch_nonce_in_pow_buffer(local_buffer, job.block_nonce_offset, nonce);
+      uint8_t* nonce_ptr = fast_nonce_patch ? local_buffer.data() + job.block_nonce_offset + 1 : nullptr;
+      Block slow_candidate = job.block;
+      slow_candidate.meta.hash.reset();
+
+      while (!stop_.load(std::memory_order_relaxed) &&
+             !work_quit_.load(std::memory_order_relaxed) &&
+             !work_found_.load(std::memory_order_relaxed) &&
+             (cancel_signal == nullptr || !cancel_signal->load(std::memory_order_relaxed))) {
+        Hash hash{};
+
+        if (fast_nonce_patch) {
+          for (size_t i = 0; i < 8; ++i) {
+            nonce_ptr[i] = static_cast<uint8_t>((nonce >> (8U * i)) & 0xFFU);
+          }
+          hash = hash_data(local_buffer);
+        } else {
+          slow_candidate.nonce = nonce;
+          hash = compute_block_hash(slow_candidate);
+        }
+
+        ++local_hashes;
+
+        if (hash_meets_target(hash, job.target)) {
+          bool expected = false;
+          if (work_found_.compare_exchange_strong(
+                expected,
+                true,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed)) {
+            work_found_nonce_.store(nonce, std::memory_order_relaxed);
+            std::lock_guard<std::mutex> found_lock(work_found_mutex_);
+            work_found_hash_ = hash;
+          }
+          break;
+        }
+
+        nonce += thread_count;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (local_hashes >= 64 ||
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush).count() >= 250) {
+          total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
+          local_hashes = 0;
+          last_flush = now;
+        }
+      }
+    } catch (...) {
+      work_found_.store(true, std::memory_order_relaxed);
+      std::lock_guard<std::mutex> lock(work_mutex_);
+      if (work_generation == work_generation_ && work_error_ == nullptr) {
+        work_error_ = std::current_exception();
+      }
+    }
+
+    if (local_hashes > 0) {
+      total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(work_mutex_);
+      if (work_generation == work_generation_) {
+        ++workers_completed_;
+        if (workers_completed_ >= thread_count) {
+          work_active_ = false;
+          work_finished_ = true;
+          work_done_cv_.notify_one();
+        }
+      }
+    }
+  }
 }
 
 Miner::MiningJob Miner::build_solo_job(NodeClient& client) {
@@ -263,112 +435,44 @@ void Miner::mine_reward_transaction(Block& block) {
 }
 
 Miner::MiningResult Miner::mine_block(const MiningJob& job, std::atomic<bool>& cancel_signal) {
+  ensure_mining_workers_started();
+
   MiningResult result;
-  std::atomic<bool> found{false};
-  std::atomic<uint64_t> found_nonce{0};
-  Hash found_hash = Hash::zero();
-  std::mutex found_lock;
-  std::mutex error_lock;
-  std::exception_ptr worker_error = nullptr;
 
-  const uint32_t thread_count = std::max<uint32_t>(1U, config_.threads);
-  std::vector<std::thread> workers;
-  workers.reserve(thread_count);
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    active_job_ = job;
+    active_cancel_signal_ = &cancel_signal;
+    workers_completed_ = 0;
+    work_active_ = true;
+    work_finished_ = false;
+    work_error_ = nullptr;
+    work_found_.store(false, std::memory_order_relaxed);
+    work_found_nonce_.store(0, std::memory_order_relaxed);
+    work_found_hash_ = Hash::zero();
+    ++work_generation_;
+  }
 
-  for (uint32_t worker_id = 0; worker_id < thread_count; ++worker_id) {
-    workers.emplace_back([&, worker_id]() {
-      try {
-        if (config_.pin_threads) {
-          (void)pin_current_thread(worker_id, thread_count);
-        }
-        if (config_.numa_bind) {
-          (void)bind_current_thread_numa(worker_id, thread_count);
-        }
+  work_cv_.notify_all();
 
-        auto local_buffer = job.block_pow_template;
-        uint64_t nonce = job.base_nonce + worker_id;
-        uint64_t local_hashes = 0;
-        auto last_flush = std::chrono::steady_clock::now();
-        const bool fast_nonce_patch = patch_nonce_in_pow_buffer(local_buffer, job.block_nonce_offset, nonce);
-        uint8_t* nonce_ptr = nullptr;
-        if (fast_nonce_patch) {
-          nonce_ptr = local_buffer.data() + job.block_nonce_offset + 1;
-        } else {
-          nonce_ptr = nullptr;
-        }
-        Block slow_candidate = job.block;
-        slow_candidate.meta.hash.reset();
-
-        while (!stop_.load(std::memory_order_relaxed) &&
-               !cancel_signal.load(std::memory_order_relaxed) &&
-               !found.load(std::memory_order_relaxed)) {
-
-          Hash hash{};
-
-          if (fast_nonce_patch) {
-            for (size_t i = 0; i < 8; ++i) {
-              nonce_ptr[i] = static_cast<uint8_t>((nonce >> (8U * i)) & 0xFFU);
-            }
-            hash = hash_data(local_buffer);
-          } else {
-            slow_candidate.nonce = nonce;
-            hash = compute_block_hash(slow_candidate);
-          }
-
-          ++local_hashes;
-
-          if (hash_meets_target(hash, job.target)) {
-            bool expected = false;
-            if (found.compare_exchange_strong(
-                  expected,
-                  true,
-                  std::memory_order_acq_rel,
-                  std::memory_order_relaxed)) {
-              found_nonce.store(nonce, std::memory_order_relaxed);
-              std::lock_guard<std::mutex> lock(found_lock);
-              found_hash = hash;
-            }
-            break;
-          }
-
-          nonce += thread_count;
-
-          const auto now = std::chrono::steady_clock::now();
-          if (local_hashes >= 64 ||
-              std::chrono::duration_cast<std::chrono::milliseconds>(now - last_flush).count() >= 250) {
-            total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
-            local_hashes = 0;
-            last_flush = now;
-          }
-        }
-
-        if (local_hashes > 0) {
-          total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
-        }
-      } catch (...) {
-        cancel_signal.store(true, std::memory_order_relaxed);
-        found.store(true, std::memory_order_relaxed);
-        std::lock_guard<std::mutex> lock(error_lock);
-        if (worker_error == nullptr) {
-          worker_error = std::current_exception();
-        }
-      }
+  {
+    std::unique_lock<std::mutex> lock(work_mutex_);
+    work_done_cv_.wait(lock, [&]() {
+      return work_finished_ || stop_.load(std::memory_order_relaxed);
     });
+    if (!work_finished_) {
+      return result;
+    }
+    if (work_error_ != nullptr) {
+      std::rethrow_exception(work_error_);
+    }
   }
 
-  for (auto& worker : workers) {
-    worker.join();
-  }
-
-  if (worker_error != nullptr) {
-    std::rethrow_exception(worker_error);
-  }
-
-  if (found.load(std::memory_order_relaxed)) {
+  if (work_found_.load(std::memory_order_relaxed)) {
     result.found = true;
-    result.nonce = found_nonce.load(std::memory_order_relaxed);
-    std::lock_guard<std::mutex> lock(found_lock);
-    result.hash = found_hash;
+    result.nonce = work_found_nonce_.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> found_lock(work_found_mutex_);
+    result.hash = work_found_hash_;
   }
 
   return result;
@@ -493,31 +597,54 @@ void Miner::run_solo() {
   std::thread event_thread;
 
   if (config_.use_chain_events) {
-    try {
-      event_client.connect();
-      event_client.subscribe_chain_events();
-      event_stream_active.store(true, std::memory_order_relaxed);
+    event_thread = std::thread([&]() {
+      bool has_connected_once = false;
+      bool interruption_reported = false;
 
-      event_thread = std::thread([&]() {
-        while (!stop_.load(std::memory_order_relaxed)) {
+      while (!stop_.load(std::memory_order_relaxed)) {
+        if (!event_stream_active.load(std::memory_order_relaxed)) {
           try {
-            const auto event = event_client.wait_chain_event();
-            if (event.kind == ChainEventKind::BLOCK) {
-              chain_event_version.fetch_add(1, std::memory_order_relaxed);
+            event_client.disconnect();
+            event_client.connect();
+            event_client.subscribe_chain_events();
+            event_stream_active.store(true, std::memory_order_relaxed);
+
+            if (interruption_reported) {
+              interruption_reported = false;
+              push_log("Chain event stream restored");
+              set_status("Mining");
             }
+            has_connected_once = true;
           } catch (...) {
-            event_stream_active.store(false, std::memory_order_relaxed);
-            set_status("Chain event stream interrupted, fallback polling");
-            push_log("Chain event stream interrupted, using polling");
-            return;
+            if (!interruption_reported) {
+              interruption_reported = true;
+              if (has_connected_once) {
+                set_status("Chain event stream interrupted, polling");
+                push_log("Chain event stream interrupted, retrying");
+              } else {
+                set_status("Chain events unavailable, fallback polling");
+                push_log("Chain events unavailable, using polling");
+              }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            continue;
           }
         }
-      });
-    } catch (...) {
-      event_stream_active.store(false, std::memory_order_relaxed);
-      set_status("Chain events unavailable, fallback polling");
-      push_log("Chain events unavailable, using polling");
-    }
+
+        try {
+          const auto event = event_client.wait_chain_event();
+          if (event.kind == ChainEventKind::BLOCK) {
+            chain_event_version.fetch_add(1, std::memory_order_relaxed);
+          }
+        } catch (...) {
+          if (stop_.load(std::memory_order_relaxed)) {
+            return;
+          }
+          event_stream_active.store(false, std::memory_order_relaxed);
+          event_client.disconnect();
+        }
+      }
+    });
   }
 
   set_status("Connected (solo)");
@@ -711,12 +838,27 @@ void Miner::run() {
   hash_cfg.secure = config_.randomx_secure;
 
   initialize_hashing(hash_cfg, config_.threads);
+  const auto runtime_hash = hashing_runtime_profile();
+  if (runtime_hash.randomx) {
+    config_.randomx_full_mem = runtime_hash.full_mem;
+    config_.randomx_huge_pages = runtime_hash.huge_pages;
+    config_.randomx_jit = runtime_hash.jit;
+    config_.randomx_hard_aes = runtime_hash.hard_aes;
+    config_.randomx_secure = runtime_hash.secure;
+  } else {
+    config_.randomx_full_mem = false;
+    config_.randomx_huge_pages = false;
+    config_.randomx_jit = false;
+    config_.randomx_hard_aes = false;
+    config_.randomx_secure = false;
+  }
 
   start_time_ = std::chrono::steady_clock::now();
   shutdown_ui_.store(false, std::memory_order_relaxed);
   std::thread ui_thread([this]() { refresh_stats_loop(); });
 
   try {
+    ensure_mining_workers_started();
     if (config_.mode == "solo") {
       run_solo();
     } else {
@@ -724,6 +866,7 @@ void Miner::run() {
     }
   } catch (...) {
     shutdown_ui_.store(true, std::memory_order_relaxed);
+    stop_mining_workers();
     if (ui_thread.joinable()) {
       ui_thread.join();
     }
@@ -732,6 +875,7 @@ void Miner::run() {
   }
 
   shutdown_ui_.store(true, std::memory_order_relaxed);
+  stop_mining_workers();
   if (ui_thread.joinable()) {
     ui_thread.join();
   }

@@ -5,10 +5,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace scrig {
@@ -40,6 +43,9 @@ private:
 
   void mine_reward_transaction(Block& block);
   MiningResult mine_block(const MiningJob& job, std::atomic<bool>& cancel_signal);
+  void ensure_mining_workers_started();
+  void stop_mining_workers();
+  void mining_worker_loop(uint32_t worker_id, uint32_t thread_count);
 
   bool submit_candidate(NodeClient& client, MiningJob& job, const MiningResult& result);
 
@@ -72,6 +78,24 @@ private:
   std::atomic<uint64_t> last_logged_job_height_{UINT64_MAX};
   std::vector<Transaction> cached_mempool_;
   std::chrono::steady_clock::time_point cached_mempool_at_{};
+
+  std::mutex work_mutex_;
+  std::condition_variable work_cv_;
+  std::condition_variable work_done_cv_;
+  std::vector<std::thread> mining_workers_;
+  MiningJob active_job_{};
+  std::atomic<bool>* active_cancel_signal_ = nullptr;
+  uint64_t work_generation_ = 0;
+  uint32_t workers_completed_ = 0;
+  bool work_stop_ = false;
+  bool work_active_ = false;
+  bool work_finished_ = false;
+  std::exception_ptr work_error_;
+  std::atomic<bool> work_quit_{false};
+  std::atomic<bool> work_found_{false};
+  std::atomic<uint64_t> work_found_nonce_{0};
+  std::mutex work_found_mutex_;
+  Hash work_found_hash_ = Hash::zero();
 
   std::chrono::steady_clock::time_point start_time_{};
 };

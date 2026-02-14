@@ -566,18 +566,29 @@ void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
 }
 
 randomx_vm* get_thread_vm() {
-  thread_local randomx_vm* vm = nullptr;
+  struct VmHolder {
+    randomx_vm* vm = nullptr;
+    ~VmHolder() {
+      if (vm != nullptr) {
+        randomx_destroy_vm(vm);
+      }
+    }
+  };
+  thread_local VmHolder holder;
 
-  if (vm == nullptr) {
+  if (holder.vm == nullptr) {
     const randomx_cache* cache = g_randomx_state.cache;
     const randomx_dataset* dataset = g_randomx_state.full_mem ? g_randomx_state.dataset : nullptr;
-    vm = randomx_create_vm(g_randomx_state.flags, const_cast<randomx_cache*>(cache), const_cast<randomx_dataset*>(dataset));
-    if (vm == nullptr) {
+    holder.vm = randomx_create_vm(
+      g_randomx_state.flags,
+      const_cast<randomx_cache*>(cache),
+      const_cast<randomx_dataset*>(dataset));
+    if (holder.vm == nullptr) {
       throw std::runtime_error("randomx_create_vm failed");
     }
   }
 
-  return vm;
+  return holder.vm;
 }
 
 #endif
@@ -605,6 +616,23 @@ bool hashing_uses_randomx() {
 #else
   return false;
 #endif
+}
+
+HashingRuntimeProfile hashing_runtime_profile() {
+  HashingRuntimeProfile profile{};
+#ifdef SCRIG_HAVE_RANDOMX
+  profile.randomx = true;
+  profile.initialized = g_randomx_state.initialized;
+  profile.full_mem = g_randomx_state.full_mem;
+  profile.huge_pages = g_randomx_state.large_pages;
+  profile.jit = (g_randomx_state.flags & RANDOMX_FLAG_JIT) != 0;
+  profile.hard_aes = (g_randomx_state.flags & RANDOMX_FLAG_HARD_AES) != 0;
+  profile.secure = (g_randomx_state.flags & RANDOMX_FLAG_SECURE) != 0;
+#else
+  profile.randomx = false;
+  profile.initialized = true;
+#endif
+  return profile;
 }
 
 Hash hash_data(std::span<const uint8_t> data) {

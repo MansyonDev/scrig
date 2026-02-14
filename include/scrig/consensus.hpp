@@ -17,9 +17,20 @@ struct HashingConfig {
   bool secure = false;
 };
 
+struct HashingRuntimeProfile {
+  bool randomx = false;
+  bool initialized = false;
+  bool full_mem = false;
+  bool huge_pages = false;
+  bool jit = false;
+  bool hard_aes = false;
+  bool secure = false;
+};
+
 void initialize_hashing(const HashingConfig& config, uint32_t init_threads);
 void shutdown_hashing();
 bool hashing_uses_randomx();
+HashingRuntimeProfile hashing_runtime_profile();
 
 Hash hash_data(std::span<const uint8_t> data);
 Hash hash_data(const std::vector<uint8_t>& data);
