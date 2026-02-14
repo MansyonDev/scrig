@@ -4,6 +4,7 @@
 #include "scrig/types.hpp"
 
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 
@@ -18,31 +19,65 @@ Config default_config() {
   return config;
 }
 
-JsonValue config_to_json(const Config& config) {
-  JsonValue::object root{
-    {"wallet_address", JsonValue(config.wallet_address)},
-    {"node_host", JsonValue(config.node_host)},
-    {"node_port", JsonValue(static_cast<uint64_t>(config.node_port))},
-    {"mode", JsonValue(config.mode)},
-    {"pool_host", JsonValue(config.pool_host)},
-    {"pool_port", JsonValue(static_cast<uint64_t>(config.pool_port))},
-    {"threads", JsonValue(static_cast<uint64_t>(config.threads))},
-    {"include_mempool_transactions", JsonValue(config.include_mempool_transactions)},
-    {"refresh_interval_ms", JsonValue(config.refresh_interval_ms)},
-    {"use_chain_events", JsonValue(config.use_chain_events)},
-    {"colorful_ui", JsonValue(config.colorful_ui)},
-    {"dashboard", JsonValue(config.dashboard)},
-    {"pin_threads", JsonValue(config.pin_threads)},
-    {"numa_bind", JsonValue(config.numa_bind)},
-    {"randomx_full_mem", JsonValue(config.randomx_full_mem)},
-    {"randomx_huge_pages", JsonValue(config.randomx_huge_pages)},
-    {"randomx_jit", JsonValue(config.randomx_jit)},
-    {"randomx_hard_aes", JsonValue(config.randomx_hard_aes)},
-    {"randomx_secure", JsonValue(config.randomx_secure)},
-    {"randomx_macos_unsafe", JsonValue(config.randomx_macos_unsafe)},
-    {"_note", JsonValue("Set wallet_address before mining.")},
-  };
-  return JsonValue(std::move(root));
+std::string json_scalar(const std::string& value) {
+  return to_json(JsonValue(value), false);
+}
+
+const char* json_bool(bool value) {
+  return value ? "true" : "false";
+}
+
+void write_field(std::ostringstream& out,
+                 const std::string& key,
+                 const std::string& value,
+                 bool comma = true) {
+  out << "  " << json_scalar(key) << ": " << value;
+  if (comma) {
+    out << ',';
+  }
+  out << '\n';
+}
+
+std::string config_to_json_text(const Config& config) {
+  std::ostringstream out;
+  out << "{\n";
+
+  write_field(out, "_note", json_scalar("Set wallet_address before mining."));
+  out << '\n';
+
+  write_field(out, "wallet_address", json_scalar(config.wallet_address));
+  out << '\n';
+
+  write_field(out, "mode", json_scalar(config.mode));
+  out << '\n';
+
+  write_field(out, "node_host", json_scalar(config.node_host));
+  write_field(out, "node_port", std::to_string(config.node_port));
+  write_field(out, "pool_host", json_scalar(config.pool_host));
+  write_field(out, "pool_port", std::to_string(config.pool_port));
+  out << '\n';
+
+  write_field(out, "threads", std::to_string(config.threads));
+  write_field(out, "include_mempool_transactions", json_bool(config.include_mempool_transactions));
+  write_field(out, "refresh_interval_ms", std::to_string(config.refresh_interval_ms));
+  write_field(out, "use_chain_events", json_bool(config.use_chain_events));
+  out << '\n';
+
+  write_field(out, "pin_threads", json_bool(config.pin_threads));
+  write_field(out, "numa_bind", json_bool(config.numa_bind));
+  write_field(out, "randomx_full_mem", json_bool(config.randomx_full_mem));
+  write_field(out, "randomx_huge_pages", json_bool(config.randomx_huge_pages));
+  write_field(out, "randomx_jit", json_bool(config.randomx_jit));
+  write_field(out, "randomx_hard_aes", json_bool(config.randomx_hard_aes));
+  write_field(out, "randomx_secure", json_bool(config.randomx_secure));
+  write_field(out, "randomx_macos_unsafe", json_bool(config.randomx_macos_unsafe));
+  out << '\n';
+
+  write_field(out, "colorful_ui", json_bool(config.colorful_ui));
+  write_field(out, "dashboard", json_bool(config.dashboard), false);
+  out << "}";
+
+  return out.str();
 }
 
 Config config_from_json(const JsonValue& value) {
@@ -94,7 +129,7 @@ Config load_or_create_config(const std::filesystem::path& path, bool& created_de
     if (!out) {
       throw std::runtime_error("failed to create config file: " + path.string());
     }
-    out << to_json(config_to_json(config), true) << '\n';
+    out << config_to_json_text(config) << '\n';
     return config;
   }
 
@@ -104,7 +139,15 @@ Config load_or_create_config(const std::filesystem::path& path, bool& created_de
   }
 
   std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  return config_from_json(parse_json(text));
+  const auto config = config_from_json(parse_json(text));
+
+  // Keep config deterministic and grouped for easier manual editing.
+  std::ofstream out(path);
+  if (out) {
+    out << config_to_json_text(config) << '\n';
+  }
+
+  return config;
 }
 
 void validate_config(const Config& config) {

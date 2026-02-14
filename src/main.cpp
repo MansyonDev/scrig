@@ -126,15 +126,42 @@ private:
     running_.store(false, std::memory_order_relaxed);
   }
 
+  void handle_hotkey(unsigned char ch) {
+    if (ch == 17U || ch == static_cast<unsigned char>('q') || ch == static_cast<unsigned char>('Q')) {
+      trigger_stop();
+      return;
+    }
+
+    if (miner_ == nullptr) {
+      return;
+    }
+
+    if (ch == static_cast<unsigned char>('h') || ch == static_cast<unsigned char>('H')) {
+      miner_->report_hashrate_now();
+      return;
+    }
+    if (ch == static_cast<unsigned char>('p') || ch == static_cast<unsigned char>('P')) {
+      miner_->request_pause();
+      return;
+    }
+    if (ch == static_cast<unsigned char>('r') || ch == static_cast<unsigned char>('R')) {
+      miner_->request_resume();
+      return;
+    }
+  }
+
 #ifdef _WIN32
   void run_windows() {
     while (running_.load(std::memory_order_relaxed)) {
       if (_kbhit() != 0) {
         const int ch = _getch();
-        if (ch == 17 || ch == 'q' || ch == 'Q') { // Ctrl+Q or q
-          trigger_stop();
-          return;
+        if (ch >= 0 && ch <= 255) {
+          handle_hotkey(static_cast<unsigned char>(ch));
+          if (!running_.load(std::memory_order_relaxed)) {
+            return;
+          }
         }
+        continue;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -198,8 +225,8 @@ private:
         continue;
       }
 
-      if (ch == 17U || ch == static_cast<unsigned char>('q') || ch == static_cast<unsigned char>('Q')) { // Ctrl+Q or q
-        trigger_stop();
+      handle_hotkey(ch);
+      if (!running_.load(std::memory_order_relaxed)) {
         return;
       }
     }
@@ -385,13 +412,13 @@ int main(int argc, char** argv) {
     std::string hotkey_error;
     const bool hotkey_enabled = hotkey_watcher.start(miner, &hotkey_error);
     if (hotkey_enabled) {
-      miner.add_runtime_note("Controls: Ctrl+Q or q to quit");
+      miner.add_runtime_note("Controls: h=hashrate, p=pause, r=resume, q=quit");
     } else {
       miner.add_runtime_note("Hotkey unavailable: " + hotkey_error + ". Use Ctrl+C to quit.");
     }
     if (!config.dashboard) {
       if (hotkey_enabled) {
-        std::cout << "Controls: Ctrl+Q or q to quit" << '\n';
+        std::cout << "Controls: h=hashrate, p=pause, r=resume, q=quit" << '\n';
       } else {
         std::cout << "Hotkey unavailable: " << hotkey_error << ". Use Ctrl+C to quit." << '\n';
       }

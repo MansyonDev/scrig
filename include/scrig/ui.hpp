@@ -19,6 +19,9 @@ struct UiSnapshot {
   uint64_t total_hashes = 0;
   uint64_t accepted = 0;
   uint64_t rejected = 0;
+  bool wallet_balance_available = false;
+  uint64_t wallet_balance_nano = 0;
+  int64_t wallet_delta_nano = 0;
   uint32_t threads = 0;
   bool randomx = false;
   std::string node;

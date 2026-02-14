@@ -20,6 +20,9 @@ class Miner {
 public:
   explicit Miner(Config config);
   void request_stop();
+  void request_pause();
+  void request_resume();
+  void report_hashrate_now();
   void add_runtime_note(std::string note);
   void run();
 
@@ -67,8 +70,14 @@ private:
   std::atomic<double> current_difficulty_{0.0};
   std::atomic<double> current_tx_difficulty_{0.0};
   std::atomic<uint64_t> current_height_{0};
+  std::atomic<bool> wallet_balance_available_{false};
+  std::atomic<uint64_t> wallet_balance_nano_{0};
+  std::atomic<uint64_t> wallet_baseline_nano_{0};
+  std::atomic<int64_t> wallet_delta_nano_{0};
+  std::atomic<bool> wallet_baseline_set_{false};
 
   std::atomic<bool> shutdown_ui_{false};
+  std::atomic<bool> paused_{false};
 
   std::mutex status_mutex_;
   std::mutex log_mutex_;

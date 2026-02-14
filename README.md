@@ -46,7 +46,7 @@ Run:
 ```
 
 Runtime control:
-- `Ctrl+Q` or `q` requests a clean miner shutdown.
+- `h` = hashrate, `p` = pause, `r` = resume, `q` = quit.
 
 ## Config
 
@@ -54,16 +54,22 @@ Generated automatically as `config.json` if missing.
 
 ```json
 {
+  "_note": "Set wallet_address before mining.",
+
   "wallet_address": "<YOUR_PUBLIC_WALLET_ADDRESS_BASE36>",
+
+  "mode": "solo",
+
   "node_host": "127.0.0.1",
   "node_port": 3003,
-  "mode": "solo",
   "pool_host": "127.0.0.1",
   "pool_port": 3003,
+
   "threads": 12,
   "include_mempool_transactions": true,
   "refresh_interval_ms": 500,
   "use_chain_events": true,
+
   "pin_threads": true,
   "numa_bind": false,
   "randomx_full_mem": true,
@@ -72,13 +78,14 @@ Generated automatically as `config.json` if missing.
   "randomx_hard_aes": true,
   "randomx_secure": false,
   "randomx_macos_unsafe": false,
+
   "colorful_ui": true,
   "dashboard": true
 }
 ```
 
 - `mode = "solo"`: mines directly against node.
-- `mode = "pool"`: mines pool jobs from `pool_host:pool_port`.
+- `mode = "pool"`: mines pool jobs from `pool_host:pool_port` (keep wallet + optimizations, no code changes needed).
 
 ## Validate Endpoint
 

@@ -11,7 +11,7 @@ namespace scrig {
 namespace {
 
 constexpr size_t kInnerWidth = 108;
-constexpr size_t kTopRows = 15;
+constexpr size_t kTopRows = 17;
 constexpr size_t kLogHeaderRow = kTopRows + 1;
 constexpr size_t kLogSeparatorRow = kTopRows + 2;
 constexpr size_t kLogStartRow = kTopRows + 3;
@@ -52,6 +52,26 @@ std::string uptime_string(uint64_t seconds) {
   return oss.str();
 }
 
+std::string snap_amount(uint64_t nano) {
+  constexpr uint64_t kNanoPerSnap = 100000000ULL;
+  const uint64_t whole = nano / kNanoPerSnap;
+  const uint64_t frac = nano % kNanoPerSnap;
+  std::ostringstream oss;
+  oss << whole << '.' << std::setw(8) << std::setfill('0') << frac;
+  return oss.str();
+}
+
+std::string snap_delta(int64_t nano_delta) {
+  constexpr int64_t kNanoPerSnap = 100000000LL;
+  const char sign = nano_delta < 0 ? '-' : '+';
+  const uint64_t abs_nano = static_cast<uint64_t>(nano_delta < 0 ? -nano_delta : nano_delta);
+  const uint64_t whole = abs_nano / static_cast<uint64_t>(kNanoPerSnap);
+  const uint64_t frac = abs_nano % static_cast<uint64_t>(kNanoPerSnap);
+  std::ostringstream oss;
+  oss << sign << whole << '.' << std::setw(8) << std::setfill('0') << frac;
+  return oss.str();
+}
+
 std::string pad_right_visible(const std::string& text, size_t width) {
   const size_t vis = visible_length(text);
   if (vis >= width) {
@@ -83,6 +103,14 @@ std::string format_opt_pair(
   const std::string right = right_name + " " + right_state;
 
   return " " + pad_right_visible(left, 51) + " | " + right;
+}
+
+std::string command_token(char key, const std::string& suffix, bool colorful) {
+  const std::string key_text(1, key);
+  const std::string decorated_key = colorful
+    ? colorize(key_text, "\x1b[1;33m", true)
+    : key_text;
+  return "[" + decorated_key + "]" + suffix;
 }
 
 std::string box_border() {
@@ -151,8 +179,22 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
     "    Uptime: " + uptime_string(s.uptime_seconds), kInnerWidth) + "|");
 
   rows.push_back("|" + pad_right_visible(
-    " Accepted: " + std::to_string(s.accepted) +
-    "    Rejected: " + std::to_string(s.rejected), kInnerWidth) + "|");
+    (s.mode == "pool"
+      ? (" Shares Accepted: " + std::to_string(s.accepted) +
+         "    Shares Rejected: " + std::to_string(s.rejected))
+      : (" Accepted: " + std::to_string(s.accepted) +
+         "    Rejected: " + std::to_string(s.rejected))),
+    kInnerWidth) + "|");
+  if (s.wallet_balance_available) {
+    rows.push_back("|" + pad_right_visible(
+      " Wallet: " + snap_amount(s.wallet_balance_nano) +
+      " SNAP    Session Net: " + snap_delta(s.wallet_delta_nano) + " SNAP",
+      kInnerWidth) + "|");
+  } else {
+    rows.push_back("|" + pad_right_visible(
+      " Wallet: n/a (node balance unavailable)",
+      kInnerWidth) + "|");
+  }
 
   std::string hash_line = s.latest_block_hash;
   if (hash_line.size() > 64) {
@@ -160,6 +202,13 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
   }
   rows.push_back("|" + pad_right_visible(" Last Block Hash: " + hash_line, kInnerWidth) + "|");
   rows.push_back("|" + pad_right_visible(" Status: " + status, kInnerWidth) + "|");
+  rows.push_back("|" + pad_right_visible(
+    " Commands: " +
+    command_token('H', "ashrate", colorful) + "  " +
+    command_token('P', "ause", colorful) + "  " +
+    command_token('R', "esume", colorful) + "  " +
+    command_token('Q', "uit", colorful),
+    kInnerWidth) + "|");
   rows.push_back(box_border());
 
   for (size_t i = 0; i < rows.size(); ++i) {

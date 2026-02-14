@@ -66,6 +66,30 @@ void Miner::request_stop() {
   work_done_cv_.notify_all();
 }
 
+void Miner::request_pause() {
+  const bool was_paused = paused_.exchange(true, std::memory_order_relaxed);
+  set_status("Paused");
+  if (!was_paused) {
+    push_log("Mining paused");
+  }
+}
+
+void Miner::request_resume() {
+  const bool was_paused = paused_.exchange(false, std::memory_order_relaxed);
+  set_status("Mining");
+  if (was_paused) {
+    push_log("Mining resumed");
+  }
+}
+
+void Miner::report_hashrate_now() {
+  push_log(
+    "Hashrate: " + human_hashrate(current_hashrate_.load(std::memory_order_relaxed)) +
+    " | height=" + std::to_string(current_height_.load(std::memory_order_relaxed)) +
+    " | accepted=" + std::to_string(accepted_.load(std::memory_order_relaxed)) +
+    " | rejected=" + std::to_string(rejected_.load(std::memory_order_relaxed)));
+}
+
 void Miner::add_runtime_note(std::string note) {
   push_log(std::move(note));
 }
@@ -181,6 +205,11 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
              !work_quit_.load(std::memory_order_relaxed) &&
              !work_found_.load(std::memory_order_relaxed) &&
              (cancel_signal == nullptr || !cancel_signal->load(std::memory_order_relaxed))) {
+        if (paused_.load(std::memory_order_relaxed)) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          continue;
+        }
+
         Hash hash{};
 
         if (fast_nonce_patch) {
@@ -361,6 +390,11 @@ void Miner::mine_reward_transaction(Block& block) {
         Transaction slow_candidate = reward_tx;
 
         while (!stop_.load(std::memory_order_relaxed) && !found.load(std::memory_order_relaxed)) {
+          if (paused_.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+          }
+
           Hash hash{};
 
           if (fast_nonce_patch) {
@@ -545,6 +579,9 @@ void Miner::refresh_stats_loop() {
       snapshot.total_hashes = total_hashes_.load(std::memory_order_relaxed);
       snapshot.accepted = accepted_.load(std::memory_order_relaxed);
       snapshot.rejected = rejected_.load(std::memory_order_relaxed);
+      snapshot.wallet_balance_available = wallet_balance_available_.load(std::memory_order_relaxed);
+      snapshot.wallet_balance_nano = wallet_balance_nano_.load(std::memory_order_relaxed);
+      snapshot.wallet_delta_nano = wallet_delta_nano_.load(std::memory_order_relaxed);
       snapshot.threads = config_.threads;
       snapshot.randomx = hashing_uses_randomx();
       snapshot.node = config_.mode == "pool"
@@ -650,6 +687,12 @@ void Miner::run_solo() {
   set_status("Connected (solo)");
 
   while (!stop_.load(std::memory_order_relaxed)) {
+    if (paused_.load(std::memory_order_relaxed)) {
+      set_status("Paused");
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      continue;
+    }
+
     set_status("Building solo job");
     MiningJob job = build_solo_job(client);
 
@@ -720,32 +763,100 @@ void Miner::run_solo() {
 void Miner::run_pool() {
   NodeClient submit_client(config_.pool_host, config_.pool_port);
   NodeClient event_client(config_.pool_host, config_.pool_port);
+  NodeClient node_height_client(config_.node_host, config_.node_port);
 
   submit_client.connect();
-  event_client.connect();
   push_log("Connected to pool " + config_.pool_host + ":" + std::to_string(config_.pool_port));
 
   const auto pool_diff_submit = submit_client.initialize_pool_handshake(miner_public_);
-  const auto pool_diff_events = event_client.initialize_pool_handshake(miner_public_);
-  (void)pool_diff_events;
 
-  try {
-    current_height_.store(submit_client.height(), std::memory_order_relaxed);
-  } catch (...) {
-    // Ignore height failures in pool mode; jobs are still event-driven.
-  }
+  std::atomic<bool> node_height_available{false};
+  std::thread node_height_thread([&]() {
+    bool has_connected_once = false;
+    bool unavailable_reported = false;
+    bool logged_initial_height = false;
+    const auto poll_interval = std::chrono::milliseconds(
+      std::max<uint64_t>(250ULL, config_.refresh_interval_ms == 0 ? 500ULL : config_.refresh_interval_ms));
+
+    while (!stop_.load(std::memory_order_relaxed)) {
+      try {
+        node_height_client.disconnect();
+        node_height_client.connect();
+
+        if (has_connected_once && unavailable_reported) {
+          unavailable_reported = false;
+          push_log("Node height source restored");
+        }
+        has_connected_once = true;
+
+        while (!stop_.load(std::memory_order_relaxed)) {
+          const auto height = node_height_client.height();
+          current_height_.store(height, std::memory_order_relaxed);
+          node_height_available.store(true, std::memory_order_relaxed);
+          if (!logged_initial_height) {
+            logged_initial_height = true;
+            push_log("Node height: " + std::to_string(height));
+          }
+          std::this_thread::sleep_for(poll_interval);
+        }
+      } catch (...) {
+        node_height_available.store(false, std::memory_order_relaxed);
+        node_height_client.disconnect();
+        if (!unavailable_reported) {
+          unavailable_reported = true;
+          push_log("Node height query unavailable in pool mode, retrying");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+      }
+    }
+    node_height_client.disconnect();
+  });
 
   current_tx_difficulty_.store(0.0, std::memory_order_relaxed);
   set_status("Connected (pool)");
 
-  event_client.subscribe_chain_events();
-
   std::mutex job_mutex;
   std::optional<Block> latest_job;
   std::atomic<uint64_t> job_version{0};
+  std::atomic<bool> event_stream_active{false};
 
   std::thread event_thread([&]() {
+    bool has_connected_once = false;
+    bool interruption_reported = false;
+
     while (!stop_.load(std::memory_order_relaxed)) {
+      if (!event_stream_active.load(std::memory_order_relaxed)) {
+        try {
+          event_client.disconnect();
+          event_client.connect();
+          (void)event_client.initialize_pool_handshake(miner_public_);
+          event_client.subscribe_chain_events();
+          event_stream_active.store(true, std::memory_order_relaxed);
+
+          if (interruption_reported) {
+            interruption_reported = false;
+            push_log("Pool event stream restored");
+            set_status("Mining shares");
+          } else if (!has_connected_once) {
+            push_log("Subscribed to pool job stream");
+          }
+          has_connected_once = true;
+        } catch (...) {
+          if (!interruption_reported) {
+            interruption_reported = true;
+            if (has_connected_once) {
+              set_status("Pool stream interrupted, reconnecting");
+              push_log("Pool event stream interrupted, retrying");
+            } else {
+              set_status("Pool stream unavailable, reconnecting");
+              push_log("Pool event stream unavailable, retrying");
+            }
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+          continue;
+        }
+      }
+
       try {
         const auto event = event_client.wait_chain_event();
         if (event.kind == ChainEventKind::BLOCK && event.block.has_value()) {
@@ -753,30 +864,49 @@ void Miner::run_pool() {
             std::lock_guard<std::mutex> lock(job_mutex);
             latest_job = *event.block;
           }
-          try {
-            current_height_.store(submit_client.height(), std::memory_order_relaxed);
-          } catch (...) {
+          const auto version = job_version.fetch_add(1, std::memory_order_relaxed) + 1ULL;
+          if (version == 1) {
+            push_log("Initial pool job received");
+          } else {
+            push_log("Pool job refreshed");
           }
-          job_version.fetch_add(1, std::memory_order_relaxed);
           set_status("New pool job");
-          push_log("Pool job received");
         }
       } catch (...) {
-        if (!stop_.load(std::memory_order_relaxed)) {
-          set_status("Pool event stream interrupted");
-          push_log("Pool event stream interrupted");
-          stop_.store(true, std::memory_order_relaxed);
+        if (stop_.load(std::memory_order_relaxed)) {
+          return;
+        }
+        event_stream_active.store(false, std::memory_order_relaxed);
+        event_client.disconnect();
+        if (!interruption_reported) {
+          interruption_reported = true;
+          set_status("Pool stream interrupted, reconnecting");
+          push_log("Pool event stream interrupted, retrying");
         }
       }
     }
   });
 
-  uint64_t local_job_version = 0;
-
   while (!stop_.load(std::memory_order_relaxed)) {
-    while (!stop_.load(std::memory_order_relaxed) &&
-           job_version.load(std::memory_order_relaxed) == local_job_version) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    if (paused_.load(std::memory_order_relaxed)) {
+      set_status("Paused");
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      continue;
+    }
+
+    if (job_version.load(std::memory_order_relaxed) == 0) {
+      if (!event_stream_active.load(std::memory_order_relaxed)) {
+        set_status("Waiting for pool stream");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      } else {
+        if (node_height_available.load(std::memory_order_relaxed)) {
+          set_status("Waiting for first pool job");
+        } else {
+          set_status("Waiting for first pool job (node height unavailable)");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+      }
+      continue;
     }
 
     if (stop_.load(std::memory_order_relaxed)) {
@@ -784,22 +914,27 @@ void Miner::run_pool() {
     }
 
     Block block;
+    uint64_t active_job_version = 0;
     {
       std::lock_guard<std::mutex> lock(job_mutex);
       if (!latest_job.has_value()) {
         continue;
       }
       block = *latest_job;
+      active_job_version = job_version.load(std::memory_order_relaxed);
     }
 
-    local_job_version = job_version.load(std::memory_order_relaxed);
+    if (active_job_version == 0) {
+      continue;
+    }
+
     MiningJob job = build_pool_job(block, pool_diff_submit);
 
     std::atomic<bool> stale{false};
     std::thread stale_watcher([&]() {
       while (!stale.load(std::memory_order_relaxed) && !stop_.load(std::memory_order_relaxed)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (job_version.load(std::memory_order_relaxed) != local_job_version) {
+        if (job_version.load(std::memory_order_relaxed) != active_job_version) {
           stale.store(true, std::memory_order_relaxed);
           set_status("Pool job refreshed");
           return;
@@ -817,15 +952,46 @@ void Miner::run_pool() {
       continue;
     }
 
-    if (job_version.load(std::memory_order_relaxed) == local_job_version) {
-      submit_candidate(submit_client, job, result);
+    if (job_version.load(std::memory_order_relaxed) == active_job_version) {
+      try {
+        const auto network_target = calculate_block_difficulty_target(
+          job.block.meta.block_pow_difficulty,
+          job.block.transactions.size());
+        const bool full_block_candidate = hash_meets_target(result.hash, network_target);
+        const bool accepted = submit_candidate(submit_client, job, result);
+        if (accepted) {
+          if (full_block_candidate) {
+            push_log("Pool accepted full block candidate (round win check pending)");
+          } else {
+            push_log("Pool accepted share");
+          }
+        } else {
+          if (full_block_candidate) {
+            push_log("Pool rejected full block candidate");
+          } else {
+            push_log("Pool rejected share");
+          }
+        }
+      } catch (const std::exception& ex) {
+        set_status("Submit failed, retrying");
+        push_log(std::string("Pool submit failed: ") + ex.what());
+      } catch (...) {
+        set_status("Submit failed, retrying");
+        push_log("Pool submit failed: unknown error");
+      }
     }
   }
 
+  event_stream_active.store(false, std::memory_order_relaxed);
+  node_height_available.store(false, std::memory_order_relaxed);
   event_client.disconnect();
   submit_client.disconnect();
+  node_height_client.disconnect();
   if (event_thread.joinable()) {
     event_thread.join();
+  }
+  if (node_height_thread.joinable()) {
+    node_height_thread.join();
   }
 }
 
@@ -856,6 +1022,64 @@ void Miner::run() {
   start_time_ = std::chrono::steady_clock::now();
   shutdown_ui_.store(false, std::memory_order_relaxed);
   std::thread ui_thread([this]() { refresh_stats_loop(); });
+  std::thread wallet_thread([this]() {
+    NodeClient wallet_client(config_.node_host, config_.node_port);
+    bool unavailable_reported = false;
+    bool connected = false;
+    bool logged_initial = false;
+    const auto poll_interval = std::chrono::milliseconds(5000);
+
+    while (!shutdown_ui_.load(std::memory_order_relaxed)) {
+      try {
+        if (!connected) {
+          wallet_client.connect();
+          connected = true;
+        }
+        const auto balance_nano = wallet_client.balance(miner_public_);
+        wallet_balance_nano_.store(balance_nano, std::memory_order_relaxed);
+        wallet_balance_available_.store(true, std::memory_order_relaxed);
+
+        if (!wallet_baseline_set_.load(std::memory_order_relaxed)) {
+          wallet_baseline_nano_.store(balance_nano, std::memory_order_relaxed);
+          wallet_delta_nano_.store(0, std::memory_order_relaxed);
+          wallet_baseline_set_.store(true, std::memory_order_relaxed);
+        } else {
+          const auto baseline = wallet_baseline_nano_.load(std::memory_order_relaxed);
+          const auto delta =
+            static_cast<int64_t>(balance_nano) - static_cast<int64_t>(baseline);
+          wallet_delta_nano_.store(delta, std::memory_order_relaxed);
+        }
+
+        if (!logged_initial) {
+          push_log("Wallet balance tracking enabled");
+          logged_initial = true;
+        }
+        unavailable_reported = false;
+
+        for (auto slept = std::chrono::milliseconds(0);
+             slept < poll_interval && !shutdown_ui_.load(std::memory_order_relaxed);
+             slept += std::chrono::milliseconds(100)) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+      } catch (...) {
+        wallet_balance_available_.store(false, std::memory_order_relaxed);
+        connected = false;
+        wallet_client.disconnect();
+        if (!unavailable_reported) {
+          unavailable_reported = true;
+          push_log("Wallet balance query unavailable, retrying");
+        }
+        for (auto slept = std::chrono::milliseconds(0);
+             slept < std::chrono::milliseconds(1000) &&
+               !shutdown_ui_.load(std::memory_order_relaxed);
+             slept += std::chrono::milliseconds(100)) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+      }
+    }
+
+    wallet_client.disconnect();
+  });
 
   try {
     ensure_mining_workers_started();
@@ -867,6 +1091,9 @@ void Miner::run() {
   } catch (...) {
     shutdown_ui_.store(true, std::memory_order_relaxed);
     stop_mining_workers();
+    if (wallet_thread.joinable()) {
+      wallet_thread.join();
+    }
     if (ui_thread.joinable()) {
       ui_thread.join();
     }
@@ -876,6 +1103,9 @@ void Miner::run() {
 
   shutdown_ui_.store(true, std::memory_order_relaxed);
   stop_mining_workers();
+  if (wallet_thread.joinable()) {
+    wallet_thread.join();
+  }
   if (ui_thread.joinable()) {
     ui_thread.join();
   }

@@ -259,6 +259,10 @@ JsonValue NodeClient::send_request(const JsonValue& request) {
     open_socket_locked();
   }
 
+  if (pool_handshake_public_.has_value() && !pool_handshake_done_) {
+    (void)initialize_pool_handshake_locked(*pool_handshake_public_);
+  }
+
   const std::string payload = to_json(request, false);
   const auto len = write_u32_be(static_cast<uint32_t>(payload.size()));
 
@@ -272,6 +276,17 @@ JsonValue NodeClient::send_request(const JsonValue& request) {
   }
 }
 
+DifficultyTarget NodeClient::initialize_pool_handshake_locked(const PublicKey& miner_public) {
+  write_all(static_cast<SocketHandle>(socket_fd_), miner_public.bytes.data(), miner_public.bytes.size());
+
+  DifficultyTarget difficulty{};
+  read_all(static_cast<SocketHandle>(socket_fd_), difficulty.data(), difficulty.size());
+
+  pool_handshake_public_ = miner_public;
+  pool_handshake_done_ = true;
+  return difficulty;
+}
+
 DifficultyTarget NodeClient::initialize_pool_handshake(const PublicKey& miner_public) {
   std::lock_guard<std::mutex> lock(io_mutex_);
 
@@ -279,13 +294,7 @@ DifficultyTarget NodeClient::initialize_pool_handshake(const PublicKey& miner_pu
     open_socket_locked();
   }
 
-  write_all(static_cast<SocketHandle>(socket_fd_), miner_public.bytes.data(), miner_public.bytes.size());
-
-  DifficultyTarget difficulty{};
-  read_all(static_cast<SocketHandle>(socket_fd_), difficulty.data(), difficulty.size());
-
-  pool_handshake_done_ = true;
-  return difficulty;
+  return initialize_pool_handshake_locked(miner_public);
 }
 
 uint64_t NodeClient::height() {
@@ -294,6 +303,19 @@ uint64_t NodeClient::height() {
   const auto it = payload.find("height");
   if (it == payload.end()) {
     throw std::runtime_error("missing response Height.height");
+  }
+  return it->second.as_uint64();
+}
+
+uint64_t NodeClient::balance(const PublicKey& address) {
+  JsonValue::object request_payload{{"address", public_key_to_json(address)}};
+  JsonValue::object request{{"Balance", JsonValue(std::move(request_payload))}};
+
+  const auto response = send_request(JsonValue(std::move(request)));
+  const auto& payload = get_variant_payload(response, "Balance").as_object();
+  const auto it = payload.find("balance");
+  if (it == payload.end()) {
+    throw std::runtime_error("missing response Balance.balance");
   }
   return it->second.as_uint64();
 }
@@ -443,6 +465,10 @@ void NodeClient::subscribe_chain_events() {
 
   if (static_cast<SocketHandle>(socket_fd_) == kInvalidSocket) {
     open_socket_locked();
+  }
+
+  if (pool_handshake_public_.has_value() && !pool_handshake_done_) {
+    (void)initialize_pool_handshake_locked(*pool_handshake_public_);
   }
 
   const std::string payload = to_json(JsonValue("SubscribeToChainEvents"), false);

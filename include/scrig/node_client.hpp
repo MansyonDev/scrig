@@ -28,6 +28,7 @@ public:
   DifficultyTarget initialize_pool_handshake(const PublicKey& miner_public);
 
   uint64_t height();
+  uint64_t balance(const PublicKey& address);
   DifficultyInfo difficulty();
   uint64_t reward();
   std::optional<Hash> block_hash(uint64_t height);
@@ -45,6 +46,7 @@ public:
 private:
   JsonValue send_request(const JsonValue& request);
   JsonValue decode_next_message();
+  DifficultyTarget initialize_pool_handshake_locked(const PublicKey& miner_public);
 
   void open_socket_locked();
   void close_socket_locked();
@@ -56,6 +58,7 @@ private:
   std::intptr_t socket_fd_ = -1;
   bool subscribed_ = false;
   bool pool_handshake_done_ = false;
+  std::optional<PublicKey> pool_handshake_public_;
 };
 
 } // namespace scrig
