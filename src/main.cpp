@@ -157,18 +157,54 @@ private:
 
 #ifdef _WIN32
   void run_windows() {
+    HANDLE h_in = GetStdHandle(STD_INPUT_HANDLE);
+    if (h_in == INVALID_HANDLE_VALUE) {
+      return;
+    }
+
+    DWORD mode = 0;
+    if (GetConsoleMode(h_in, &mode)) {
+      // Disable Quick Edit to avoid input thread stalls.
+      DWORD new_mode = mode | ENABLE_EXTENDED_FLAGS;
+      new_mode &= ~ENABLE_QUICK_EDIT_MODE;
+      (void)SetConsoleMode(h_in, new_mode);
+    }
+
+    INPUT_RECORD record{};
+    DWORD events_read = 0;
+
     while (running_.load(std::memory_order_relaxed)) {
-      if (_kbhit() != 0) {
-        const int ch = _getch();
-        if (ch >= 0 && ch <= 255) {
-          handle_hotkey(static_cast<unsigned char>(ch));
-          if (!running_.load(std::memory_order_relaxed)) {
-            return;
-          }
-        }
+      const DWORD wait = WaitForSingleObject(h_in, 50);
+      if (wait != WAIT_OBJECT_0) {
         continue;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+      if (!ReadConsoleInputW(h_in, &record, 1, &events_read) || events_read == 0) {
+        continue;
+      }
+      if (record.EventType != KEY_EVENT) {
+        continue;
+      }
+
+      const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
+      if (!key.bKeyDown) {
+        continue;
+      }
+
+      unsigned char ch = 0;
+      if (key.uChar.AsciiChar != 0) {
+        ch = static_cast<unsigned char>(key.uChar.AsciiChar);
+      } else if (key.uChar.UnicodeChar <= 127 && key.uChar.UnicodeChar != 0) {
+        ch = static_cast<unsigned char>(key.uChar.UnicodeChar);
+      }
+      if (ch == 0) {
+        continue;
+      }
+
+      handle_hotkey(ch);
+      if (!running_.load(std::memory_order_relaxed)) {
+        return;
+      }
     }
   }
 #else
