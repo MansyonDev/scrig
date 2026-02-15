@@ -17,6 +17,10 @@
 #include <randomx.h>
 #endif
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 namespace scrig {
 
 namespace {
@@ -255,6 +259,74 @@ std::array<uint8_t, 32> multiply_divide_target(
   bool* overflowed) {
 
   std::array<uint8_t, 32> multiplied{};
+
+#if defined(_MSC_VER)
+  bool local_overflow = false;
+  uint64_t carry = 0;
+
+  for (size_t idx = 32; idx > 0; --idx) {
+    const size_t i = idx - 1;
+    unsigned __int64 hi = 0;
+    const unsigned __int64 lo = _umul128(
+      static_cast<unsigned __int64>(input[i]),
+      static_cast<unsigned __int64>(multiply),
+      &hi);
+
+    const unsigned __int64 sum_lo = lo + carry;
+    const unsigned __int64 sum_hi = hi + (sum_lo < lo ? 1ULL : 0ULL);
+    multiplied[i] = static_cast<uint8_t>(sum_lo & 0xFFU);
+
+    if (sum_hi > 0xFFU) {
+      local_overflow = true;
+      break;
+    }
+
+    carry = (sum_hi << 56U) | (sum_lo >> 8U);
+  }
+
+  if (overflowed != nullptr) {
+    *overflowed = local_overflow || carry > 0;
+  }
+
+  if (local_overflow || carry > 0) {
+    multiplied.fill(0xFFU);
+    return multiplied;
+  }
+
+  std::array<uint8_t, 32> result{};
+  uint64_t remainder = 0;
+  for (size_t i = 0; i < 32; ++i) {
+#if defined(_M_X64)
+    const unsigned __int64 numerator_hi = remainder >> 56U;
+    const unsigned __int64 numerator_lo = (remainder << 8U) | static_cast<unsigned __int64>(multiplied[i]);
+    unsigned __int64 remainder_out = 0;
+    const unsigned __int64 q = _udiv128(numerator_hi, numerator_lo, divide, &remainder_out);
+    if (q > 0xFFU) {
+      if (overflowed != nullptr) {
+        *overflowed = true;
+      }
+      result.fill(0xFFU);
+      return result;
+    }
+    result[i] = static_cast<uint8_t>(q);
+    remainder = remainder_out;
+#else
+    // Conservative fallback for MSVC non-x64 targets.
+    if (remainder > (UINT64_MAX >> 8U)) {
+      if (overflowed != nullptr) {
+        *overflowed = true;
+      }
+      result.fill(0xFFU);
+      return result;
+    }
+    const uint64_t cur = (remainder << 8U) | static_cast<uint64_t>(multiplied[i]);
+    result[i] = static_cast<uint8_t>(cur / divide);
+    remainder = cur % divide;
+#endif
+  }
+
+  return result;
+#else
   unsigned __int128 carry = 0;
 
   for (size_t idx = 32; idx > 0; --idx) {
@@ -283,6 +355,7 @@ std::array<uint8_t, 32> multiply_divide_target(
   }
 
   return result;
+#endif
 }
 
 void encode_hash(BincodeWriter& writer, const Hash& hash) {
