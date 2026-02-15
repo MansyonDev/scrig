@@ -1,8 +1,10 @@
 #include "scrig/config.hpp"
+#include "scrig/consensus.hpp"
 #include "scrig/miner.hpp"
 #include "scrig/node_client.hpp"
 #include "scrig/perf.hpp"
 #include "scrig/types.hpp"
+#include "scrig/ui.hpp"
 
 #include <atomic>
 #include <csignal>
@@ -34,20 +36,27 @@ void handle_signal(int) {
   }
 }
 
-void maybe_enable_ansi() {
+bool maybe_enable_ansi() {
 #ifdef _WIN32
   HANDLE h_out = GetStdHandle(STD_OUTPUT_HANDLE);
   if (h_out == INVALID_HANDLE_VALUE) {
-    return;
+    return false;
   }
 
   DWORD mode = 0;
   if (!GetConsoleMode(h_out, &mode)) {
-    return;
+    return false;
   }
 
-  mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-  SetConsoleMode(h_out, mode);
+  const DWORD requested = mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+  if (!SetConsoleMode(h_out, requested)) {
+    if (!SetConsoleMode(h_out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+      return false;
+    }
+  }
+  return true;
+#else
+  return true;
 #endif
 }
 
@@ -157,51 +166,27 @@ private:
 
 #ifdef _WIN32
   void run_windows() {
-    HANDLE h_in = GetStdHandle(STD_INPUT_HANDLE);
-    if (h_in == INVALID_HANDLE_VALUE) {
-      return;
-    }
-
-    DWORD mode = 0;
-    if (GetConsoleMode(h_in, &mode)) {
-      // Disable Quick Edit to avoid input thread stalls.
-      DWORD new_mode = mode | ENABLE_EXTENDED_FLAGS;
-      new_mode &= ~ENABLE_QUICK_EDIT_MODE;
-      (void)SetConsoleMode(h_in, new_mode);
-    }
-
-    INPUT_RECORD record{};
-    DWORD events_read = 0;
-
     while (running_.load(std::memory_order_relaxed)) {
-      const DWORD wait = WaitForSingleObject(h_in, 50);
-      if (wait != WAIT_OBJECT_0) {
+      if (_kbhit() == 0) {
+        Sleep(25);
         continue;
       }
 
-      if (!ReadConsoleInputW(h_in, &record, 1, &events_read) || events_read == 0) {
-        continue;
-      }
-      if (record.EventType != KEY_EVENT) {
-        continue;
-      }
-
-      const KEY_EVENT_RECORD& key = record.Event.KeyEvent;
-      if (!key.bKeyDown) {
+      const int raw = _getch();
+      if (raw == 0 || raw == 224) {
+        // Extended key prefix, consume next byte and ignore.
+        if (_kbhit() != 0) {
+          (void)_getch();
+        }
         continue;
       }
 
-      unsigned char ch = 0;
-      if (key.uChar.AsciiChar != 0) {
-        ch = static_cast<unsigned char>(key.uChar.AsciiChar);
-      } else if (key.uChar.UnicodeChar <= 127 && key.uChar.UnicodeChar != 0) {
-        ch = static_cast<unsigned char>(key.uChar.UnicodeChar);
-      }
-      if (ch == 0) {
-        continue;
+      if (raw == 3 || raw == 17) {
+        trigger_stop();
+        return;
       }
 
-      handle_hotkey(ch);
+      handle_hotkey(static_cast<unsigned char>(raw));
       if (!running_.load(std::memory_order_relaxed)) {
         return;
       }
@@ -324,15 +309,27 @@ CliOptions parse_cli(int argc, char** argv) {
 
 std::vector<std::string> sanitize_runtime_config(scrig::Config& config) {
   std::vector<std::string> notes;
+  notes.push_back("cpu profile: " + scrig::cpu_runtime_summary());
 
   if (config.threads == 0) {
-    config.threads = scrig::logical_cpu_count();
-    notes.push_back("threads was 0; using logical CPU count (" + std::to_string(config.threads) + ")");
+    const auto logical = scrig::logical_cpu_count();
+    const auto physical = scrig::physical_cpu_count();
+    config.threads = scrig::recommended_mining_threads();
+    if (physical > 0) {
+      notes.push_back(
+        "threads was 0; using recommended mining threads (" + std::to_string(config.threads) +
+        ", physical=" + std::to_string(physical) +
+        ", logical=" + std::to_string(logical) + ")");
+    } else {
+      notes.push_back("threads was 0; using logical CPU count (" + std::to_string(config.threads) + ")");
+    }
   }
 
   if (config.pin_threads && !scrig::thread_pinning_supported()) {
     config.pin_threads = false;
     notes.push_back("pin_threads disabled: CPU affinity is not supported on this platform");
+  } else if (config.pin_threads) {
+    notes.push_back("affinity profile: " + scrig::affinity_profile_summary(config.threads, 10));
   }
 
   if (config.numa_bind && !scrig::numa_binding_supported()) {
@@ -410,7 +407,8 @@ void validate_node(const scrig::Config& config) {
 
 int main(int argc, char** argv) {
   try {
-    maybe_enable_ansi();
+    const bool ansi_enabled = maybe_enable_ansi();
+    scrig::set_dashboard_ansi_enabled(ansi_enabled);
 
     const auto cli = parse_cli(argc, argv);
 
@@ -424,6 +422,7 @@ int main(int argc, char** argv) {
     }
 
     const auto tuning_notes = sanitize_runtime_config(config);
+    const auto hashing_caps = scrig::hashing_capability_profile();
     scrig::save_config(cli.config_path, config);
     scrig::validate_config(config);
 
@@ -465,6 +464,22 @@ int main(int argc, char** argv) {
     }
     for (const auto& note : tuning_notes) {
       miner.add_runtime_note("Auto-tuning: " + note);
+    }
+    if (!ansi_enabled) {
+      miner.add_runtime_note("Dashboard ANSI mode unavailable; using compatibility redraw");
+    }
+    if (hashing_caps.randomx) {
+      miner.add_runtime_note(
+        "RandomX capabilities: jit=" + std::string(hashing_caps.jit ? "on" : "off") +
+        " hard_aes=" + std::string(hashing_caps.hard_aes ? "on" : "off") +
+        " argon2_avx2=" + std::string(hashing_caps.argon2_avx2 ? "on" : "off") +
+        " argon2_ssse3=" + std::string(hashing_caps.argon2_ssse3 ? "on" : "off"));
+      if (!hashing_caps.hard_aes) {
+        miner.add_runtime_note("RandomX capability: HARD_AES unavailable on this runtime/build");
+      }
+      if (!hashing_caps.jit) {
+        miner.add_runtime_note("RandomX capability: JIT unavailable on this runtime/build");
+      }
     }
     if (!config.dashboard) {
       if (hotkey_enabled) {

@@ -17,24 +17,24 @@ Config default_config() {
   Config config;
   config.threads = 0;
   config.pin_threads = thread_pinning_supported();
-  config.numa_bind = numa_binding_supported() && numa_detected();
-  config.randomx_huge_pages = huge_pages_supported_on_platform() &&
-    (!can_detect_huge_pages_configuration() || huge_pages_configured());
+  config.numa_bind = false;
+  config.randomx_huge_pages = huge_pages_supported_on_platform();
   config.use_chain_events = true;
   config.randomx_hard_aes = true;
   config.randomx_secure = false;
   config.randomx_macos_unsafe = false;
-  config.include_mempool_transactions = true;
+  config.include_mempool_transactions = false;
+  config.refresh_interval_ms = 500;
+  config.randomx_jit = true;
+  config.randomx_full_mem = true;
 
 #if defined(__APPLE__)
-  config.include_mempool_transactions = false;
-  config.randomx_jit = true;
-  config.randomx_full_mem = true;
-  config.randomx_secure = true;
+  config.randomx_huge_pages = false;
   config.randomx_macos_unsafe = true;
-#else
-  config.randomx_jit = true;
-  config.randomx_full_mem = true;
+#elif defined(_WIN32)
+  config.numa_bind = false;
+#elif defined(__linux__)
+  config.numa_bind = numa_binding_supported() && numa_detected();
 #endif
 
   return config;
@@ -42,7 +42,7 @@ Config default_config() {
 
 const char* platform_profile_name() {
 #if defined(__APPLE__)
-  return "macos-stable";
+  return "macos-performance";
 #elif defined(_WIN32)
   return "windows-performance";
 #elif defined(__linux__)

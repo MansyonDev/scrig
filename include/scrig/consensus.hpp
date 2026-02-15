@@ -27,13 +27,27 @@ struct HashingRuntimeProfile {
   bool secure = false;
 };
 
+struct HashingCapabilityProfile {
+  bool randomx = false;
+  bool jit = false;
+  bool hard_aes = false;
+  bool secure = false;
+  bool argon2_avx2 = false;
+  bool argon2_ssse3 = false;
+};
+
 void initialize_hashing(const HashingConfig& config, uint32_t init_threads);
 void shutdown_hashing();
 bool hashing_uses_randomx();
 HashingRuntimeProfile hashing_runtime_profile();
+HashingCapabilityProfile hashing_capability_profile();
 
 Hash hash_data(std::span<const uint8_t> data);
 Hash hash_data(const std::vector<uint8_t>& data);
+bool hashing_supports_pipeline();
+void hash_data_pipeline_begin(std::span<const uint8_t> data);
+Hash hash_data_pipeline_next(std::span<const uint8_t> next_data);
+Hash hash_data_pipeline_last();
 
 DifficultyTarget calculate_block_difficulty_target(const DifficultyTarget& block_difficulty, size_t tx_count);
 bool hash_meets_target(const Hash& hash, const DifficultyTarget& target);

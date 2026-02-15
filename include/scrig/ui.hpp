@@ -34,6 +34,7 @@ struct UiSnapshot {
 };
 
 std::string human_hashrate(double rate);
+void set_dashboard_ansi_enabled(bool enabled);
 void render_dashboard(const UiSnapshot& snapshot, bool colorful);
 
 } // namespace scrig

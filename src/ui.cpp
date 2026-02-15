@@ -6,6 +6,10 @@
 #include <sstream>
 #include <unordered_map>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace scrig {
 
 namespace {
@@ -15,6 +19,7 @@ constexpr size_t kTopRows = 17;
 constexpr size_t kLogHeaderRow = kTopRows + 1;
 constexpr size_t kLogSeparatorRow = kTopRows + 2;
 constexpr size_t kLogStartRow = kTopRows + 3;
+bool g_dashboard_ansi_enabled = true;
 
 std::string colorize(const std::string& text, const char* code, bool enabled) {
   if (!enabled) {
@@ -80,6 +85,51 @@ std::string pad_right_visible(const std::string& text, size_t width) {
   return text + std::string(width - vis, ' ');
 }
 
+std::string clamp_visible(const std::string& text, size_t max_visible) {
+  if (visible_length(text) <= max_visible) {
+    return text;
+  }
+
+  std::string out;
+  out.reserve(text.size());
+
+  size_t visible = 0;
+  size_t i = 0;
+  while (i < text.size() && visible < max_visible) {
+    if (text[i] == '\x1b' && i + 1 < text.size() && text[i + 1] == '[') {
+      const size_t esc_start = i;
+      i += 2;
+      while (i < text.size() && text[i] != 'm') {
+        ++i;
+      }
+      if (i < text.size()) {
+        ++i;
+      }
+      out.append(text.substr(esc_start, i - esc_start));
+      continue;
+    }
+
+    out.push_back(text[i]);
+    ++i;
+    ++visible;
+  }
+
+  if (max_visible >= 3) {
+    if (visible >= 3) {
+      while (!out.empty() && visible > max_visible - 3) {
+        if (out.back() == '\x1b') {
+          break;
+        }
+        out.pop_back();
+        --visible;
+      }
+      out += "...";
+    }
+  }
+
+  return out;
+}
+
 std::string optimization_state(bool enabled, bool colorful) {
   if (!colorful) {
     return enabled ? "[ON ]" : "[OFF]";
@@ -121,6 +171,37 @@ void write_fixed_row(size_t row, const std::string& text) {
   std::cout << "\x1b[" << row << ";1H\x1b[2K" << text;
 }
 
+void save_cursor_position() {
+  // Use both DEC and CSI save sequences for broader terminal compatibility.
+  std::cout << "\x1b" "7\x1b[s";
+}
+
+void restore_cursor_position() {
+  // Restore in reverse order so either save mechanism can be effective.
+  std::cout << "\x1b[u\x1b" "8";
+}
+
+#ifdef _WIN32
+void clear_console_windows() {
+  HANDLE h_out = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (h_out == INVALID_HANDLE_VALUE) {
+    return;
+  }
+
+  CONSOLE_SCREEN_BUFFER_INFO csbi{};
+  if (!GetConsoleScreenBufferInfo(h_out, &csbi)) {
+    return;
+  }
+
+  const DWORD cell_count = static_cast<DWORD>(csbi.dwSize.X) * static_cast<DWORD>(csbi.dwSize.Y);
+  const COORD origin{0, 0};
+  DWORD written = 0;
+  (void)FillConsoleOutputCharacterA(h_out, ' ', cell_count, origin, &written);
+  (void)FillConsoleOutputAttribute(h_out, csbi.wAttributes, cell_count, origin, &written);
+  (void)SetConsoleCursorPosition(h_out, origin);
+}
+#endif
+
 } // namespace
 
 std::string human_hashrate(double rate) {
@@ -137,12 +218,16 @@ std::string human_hashrate(double rate) {
   return oss.str();
 }
 
+void set_dashboard_ansi_enabled(bool enabled) {
+  g_dashboard_ansi_enabled = enabled;
+}
+
 void render_dashboard(const UiSnapshot& s, bool colorful) {
   static bool initialized = false;
   static bool log_cursor_initialized = false;
   static size_t rendered_log_lines = 0;
 
-  if (!initialized) {
+  if (g_dashboard_ansi_enabled && !initialized) {
     std::cout << "\x1b[2J";
     initialized = true;
   }
@@ -213,14 +298,34 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
     kInnerWidth) + "|");
   rows.push_back(box_border());
 
+  if (!g_dashboard_ansi_enabled) {
+#ifdef _WIN32
+    clear_console_windows();
+#else
+    std::cout << "\x1b[2J\x1b[H";
+#endif
+    for (const auto& row : rows) {
+      std::cout << row << '\n';
+    }
+    std::cout << "Runtime Log (scrollable)\n";
+    std::cout << std::string(kInnerWidth, '-') << '\n';
+    const size_t visible_logs = 200;
+    const size_t start = s.log_lines.size() > visible_logs ? (s.log_lines.size() - visible_logs) : 0;
+    for (size_t i = start; i < s.log_lines.size(); ++i) {
+      std::cout << "- " << clamp_visible(s.log_lines[i], kInnerWidth - 4) << '\n';
+    }
+    std::cout.flush();
+    return;
+  }
+
   // Keep the top dashboard fixed while letting logs append naturally below.
-  std::cout << "\x1b" "7";
+  save_cursor_position();
   for (size_t i = 0; i < rows.size(); ++i) {
     write_fixed_row(i + 1, rows[i]);
   }
   write_fixed_row(kLogHeaderRow, "Runtime Log (scrollable)");
   write_fixed_row(kLogSeparatorRow, std::string(kInnerWidth, '-'));
-  std::cout << "\x1b" "8";
+  restore_cursor_position();
 
   if (!log_cursor_initialized || rendered_log_lines > s.log_lines.size()) {
     std::cout << "\x1b[" << kLogStartRow << ";1H";
@@ -229,7 +334,7 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
   }
 
   for (size_t i = rendered_log_lines; i < s.log_lines.size(); ++i) {
-    std::cout << "- " << s.log_lines[i] << '\n';
+    std::cout << "\r\x1b[2K- " << clamp_visible(s.log_lines[i], kInnerWidth - 4) << '\n';
   }
   rendered_log_lines = s.log_lines.size();
 

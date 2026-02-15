@@ -1,11 +1,17 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
 namespace scrig {
 
 uint32_t logical_cpu_count();
+uint32_t physical_cpu_count();
+uint32_t recommended_mining_threads();
+std::string cpu_runtime_summary();
+std::string affinity_plan_source();
+std::string affinity_profile_summary(uint32_t worker_count, size_t max_workers = 8);
 bool pin_current_thread(uint32_t worker_index, uint32_t worker_count);
 bool bind_current_thread_numa(uint32_t worker_index, uint32_t worker_count);
 bool thread_pinning_supported();

@@ -588,13 +588,33 @@ bool try_init_randomx_once(randomx_flags flags, bool full_mem, uint32_t init_thr
 }
 
 void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
+  const randomx_flags supported_flags = randomx_get_flags();
   randomx_flags base_flags = RANDOMX_FLAG_DEFAULT;
 
+  bool allow_speculative_flags = false;
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+  allow_speculative_flags = true;
+#endif
+
   if (config.jit) {
-    base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_JIT);
+    if ((supported_flags & RANDOMX_FLAG_JIT) != 0) {
+      base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_JIT);
+    } else if (allow_speculative_flags) {
+      base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_JIT);
+      std::cerr << "[RANDOMX] JIT requested, but runtime capability probe reports unavailable. Trying anyway.\n";
+    } else {
+      std::cerr << "[RANDOMX] JIT requested but unavailable on this runtime/build. Continuing without JIT.\n";
+    }
   }
   if (config.hard_aes) {
-    base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_HARD_AES);
+    if ((supported_flags & RANDOMX_FLAG_HARD_AES) != 0) {
+      base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_HARD_AES);
+    } else if (allow_speculative_flags) {
+      base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_HARD_AES);
+      std::cerr << "[RANDOMX] HARD_AES requested, but runtime capability probe reports unavailable. Trying anyway.\n";
+    } else {
+      std::cerr << "[RANDOMX] HARD_AES requested but unavailable on this runtime/build. Continuing with soft AES.\n";
+    }
   }
   if (config.secure) {
     base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_SECURE);
@@ -615,8 +635,31 @@ void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
   };
 
   std::string reason;
-  if (try_init_randomx_once(make_flags(want_full_mem, want_large_pages), want_full_mem, init_threads, &reason)) {
+  auto try_current = [&]() {
+    return try_init_randomx_once(make_flags(want_full_mem, want_large_pages), want_full_mem, init_threads, &reason);
+  };
+
+  if (try_current()) {
     return;
+  }
+
+  if ((base_flags & RANDOMX_FLAG_HARD_AES) != 0) {
+    std::cerr << "[RANDOMX] Falling back: HARD_AES init failed (" << reason << "). Retrying with soft AES.\n";
+    base_flags = static_cast<randomx_flags>(base_flags & ~RANDOMX_FLAG_HARD_AES);
+    if (try_current()) {
+      return;
+    }
+  }
+
+  if ((base_flags & RANDOMX_FLAG_JIT) != 0) {
+    std::cerr << "[RANDOMX] Falling back: JIT init failed (" << reason << "). Retrying without JIT.\n";
+    base_flags = static_cast<randomx_flags>(base_flags & ~RANDOMX_FLAG_JIT);
+    if ((base_flags & RANDOMX_FLAG_SECURE) != 0) {
+      base_flags = static_cast<randomx_flags>(base_flags & ~RANDOMX_FLAG_SECURE);
+    }
+    if (try_current()) {
+      return;
+    }
   }
 
   if (want_large_pages) {
@@ -666,6 +709,11 @@ randomx_vm* get_thread_vm() {
 
 #endif
 
+#ifndef SCRIG_HAVE_RANDOMX
+thread_local Hash g_pipeline_pending_hash = Hash::zero();
+thread_local bool g_pipeline_has_pending = false;
+#endif
+
 } // namespace
 
 void initialize_hashing(const HashingConfig& config, uint32_t init_threads) {
@@ -708,6 +756,20 @@ HashingRuntimeProfile hashing_runtime_profile() {
   return profile;
 }
 
+HashingCapabilityProfile hashing_capability_profile() {
+  HashingCapabilityProfile profile{};
+#ifdef SCRIG_HAVE_RANDOMX
+  const randomx_flags flags = randomx_get_flags();
+  profile.randomx = true;
+  profile.jit = (flags & RANDOMX_FLAG_JIT) != 0;
+  profile.hard_aes = (flags & RANDOMX_FLAG_HARD_AES) != 0;
+  profile.secure = (flags & RANDOMX_FLAG_SECURE) != 0;
+  profile.argon2_avx2 = (flags & RANDOMX_FLAG_ARGON2_AVX2) != 0;
+  profile.argon2_ssse3 = (flags & RANDOMX_FLAG_ARGON2_SSSE3) != 0;
+#endif
+  return profile;
+}
+
 Hash hash_data(std::span<const uint8_t> data) {
 #ifdef SCRIG_HAVE_RANDOMX
   if (!g_randomx_state.initialized) {
@@ -725,6 +787,65 @@ Hash hash_data(std::span<const uint8_t> data) {
 
 Hash hash_data(const std::vector<uint8_t>& data) {
   return hash_data(std::span<const uint8_t>(data.data(), data.size()));
+}
+
+bool hashing_supports_pipeline() {
+#ifdef SCRIG_HAVE_RANDOMX
+  return true;
+#else
+  return false;
+#endif
+}
+
+void hash_data_pipeline_begin(std::span<const uint8_t> data) {
+#ifdef SCRIG_HAVE_RANDOMX
+  if (!g_randomx_state.initialized) {
+    throw std::runtime_error("hashing is not initialized");
+  }
+  auto* vm = get_thread_vm();
+  randomx_calculate_hash_first(vm, data.data(), data.size());
+#else
+  g_pipeline_pending_hash = hash_data(data);
+  g_pipeline_has_pending = true;
+#endif
+}
+
+Hash hash_data_pipeline_next(std::span<const uint8_t> next_data) {
+#ifdef SCRIG_HAVE_RANDOMX
+  if (!g_randomx_state.initialized) {
+    throw std::runtime_error("hashing is not initialized");
+  }
+  Hash out = Hash::zero();
+  auto* vm = get_thread_vm();
+  randomx_calculate_hash_next(vm, next_data.data(), next_data.size(), out.bytes.data());
+  return out;
+#else
+  if (!g_pipeline_has_pending) {
+    throw std::runtime_error("hashing pipeline has no pending input");
+  }
+  const Hash out = g_pipeline_pending_hash;
+  g_pipeline_pending_hash = hash_data(next_data);
+  g_pipeline_has_pending = true;
+  return out;
+#endif
+}
+
+Hash hash_data_pipeline_last() {
+#ifdef SCRIG_HAVE_RANDOMX
+  if (!g_randomx_state.initialized) {
+    throw std::runtime_error("hashing is not initialized");
+  }
+  Hash out = Hash::zero();
+  auto* vm = get_thread_vm();
+  randomx_calculate_hash_last(vm, out.bytes.data());
+  return out;
+#else
+  if (!g_pipeline_has_pending) {
+    throw std::runtime_error("hashing pipeline has no pending input");
+  }
+  g_pipeline_has_pending = false;
+  return g_pipeline_pending_hash;
+#endif
 }
 
 DifficultyTarget calculate_block_difficulty_target(const DifficultyTarget& block_difficulty, size_t tx_count) {

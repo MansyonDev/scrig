@@ -51,6 +51,7 @@ std::vector<Transaction> filter_mempool(const std::vector<Transaction>& mempool)
 
 constexpr uint64_t kHashFlushBatch = 512;
 constexpr std::chrono::milliseconds kHashFlushInterval{500};
+constexpr uint32_t kRandomXPipelineBatch = 8;
 
 std::atomic<uint64_t> g_nonce_seed{0x9E3779B97F4A7C15ULL};
 
@@ -213,7 +214,10 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
       auto local_buffer = job.block_pow_template;
       uint64_t nonce = job.base_nonce + worker_id;
       const bool fast_nonce_patch = patch_nonce_in_pow_buffer(local_buffer, job.block_nonce_offset, nonce);
+      const bool use_pipeline = fast_nonce_patch && hashing_supports_pipeline();
+      auto pipeline_buffer = use_pipeline ? local_buffer : std::vector<uint8_t>{};
       uint8_t* nonce_ptr = fast_nonce_patch ? local_buffer.data() + job.block_nonce_offset + 1 : nullptr;
+      uint8_t* pipeline_nonce_ptr = use_pipeline ? (pipeline_buffer.data() + job.block_nonce_offset + 1) : nullptr;
       Block slow_candidate = job.block;
       slow_candidate.meta.hash.reset();
 
@@ -228,33 +232,103 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
 
         Hash hash{};
 
-        if (fast_nonce_patch) {
+        if (use_pipeline) {
+          auto patch_nonce = [](uint8_t* ptr, uint64_t value) {
+            for (size_t i = 0; i < 8; ++i) {
+              ptr[i] = static_cast<uint8_t>((value >> (8U * i)) & 0xFFU);
+            }
+          };
+
+          std::array<uint64_t, kRandomXPipelineBatch> batch_nonces{};
+          uint32_t batch_count = 0;
+          for (; batch_count < kRandomXPipelineBatch; ++batch_count) {
+            batch_nonces[batch_count] = nonce;
+            nonce += thread_count;
+          }
+
+          patch_nonce(nonce_ptr, batch_nonces[0]);
+          hash_data_pipeline_begin(local_buffer);
+
+          bool found_in_batch = false;
+          uint64_t found_nonce = 0;
+          Hash found_hash = Hash::zero();
+
+          for (uint32_t i = 1; i < batch_count; ++i) {
+            uint8_t* next_nonce_ptr = (i & 1U) == 0U ? nonce_ptr : pipeline_nonce_ptr;
+            auto& next_buffer = (i & 1U) == 0U ? local_buffer : pipeline_buffer;
+            patch_nonce(next_nonce_ptr, batch_nonces[i]);
+
+            const Hash out = hash_data_pipeline_next(next_buffer);
+            ++local_hashes;
+            if (hash_meets_target(out, job.target)) {
+              found_in_batch = true;
+              found_nonce = batch_nonces[i - 1];
+              found_hash = out;
+              break;
+            }
+          }
+
+          const Hash last_out = hash_data_pipeline_last();
+          ++local_hashes;
+          if (!found_in_batch && hash_meets_target(last_out, job.target)) {
+            found_in_batch = true;
+            found_nonce = batch_nonces[batch_count - 1];
+            found_hash = last_out;
+          }
+
+          if (found_in_batch) {
+            bool expected = false;
+            if (work_found_.compare_exchange_strong(
+                  expected,
+                  true,
+                  std::memory_order_acq_rel,
+                  std::memory_order_relaxed)) {
+              work_found_nonce_.store(found_nonce, std::memory_order_relaxed);
+              std::lock_guard<std::mutex> found_lock(work_found_mutex_);
+              work_found_hash_ = found_hash;
+            }
+            break;
+          }
+        } else if (fast_nonce_patch) {
           for (size_t i = 0; i < 8; ++i) {
             nonce_ptr[i] = static_cast<uint8_t>((nonce >> (8U * i)) & 0xFFU);
           }
           hash = hash_data(local_buffer);
+          nonce += thread_count;
+          ++local_hashes;
+
+          if (hash_meets_target(hash, job.target)) {
+            bool expected = false;
+            if (work_found_.compare_exchange_strong(
+                  expected,
+                  true,
+                  std::memory_order_acq_rel,
+                  std::memory_order_relaxed)) {
+              work_found_nonce_.store(nonce - thread_count, std::memory_order_relaxed);
+              std::lock_guard<std::mutex> found_lock(work_found_mutex_);
+              work_found_hash_ = hash;
+            }
+            break;
+          }
         } else {
           slow_candidate.nonce = nonce;
           hash = compute_block_hash(slow_candidate);
-        }
-
-        ++local_hashes;
-
-        if (hash_meets_target(hash, job.target)) {
-          bool expected = false;
-          if (work_found_.compare_exchange_strong(
-                expected,
-                true,
-                std::memory_order_acq_rel,
-                std::memory_order_relaxed)) {
-            work_found_nonce_.store(nonce, std::memory_order_relaxed);
-            std::lock_guard<std::mutex> found_lock(work_found_mutex_);
-            work_found_hash_ = hash;
+          ++local_hashes;
+          if (hash_meets_target(hash, job.target)) {
+            bool expected = false;
+            if (work_found_.compare_exchange_strong(
+                  expected,
+                  true,
+                  std::memory_order_acq_rel,
+                  std::memory_order_relaxed)) {
+              work_found_nonce_.store(nonce, std::memory_order_relaxed);
+              std::lock_guard<std::mutex> found_lock(work_found_mutex_);
+              work_found_hash_ = hash;
+            }
+            break;
           }
-          break;
+          nonce += thread_count;
         }
-
-        nonce += thread_count;
 
         const auto now = std::chrono::steady_clock::now();
         if (local_hashes >= kHashFlushBatch || (now - last_flush) >= kHashFlushInterval) {
@@ -397,7 +471,10 @@ void Miner::mine_reward_transaction(Block& block) {
         uint64_t local_hashes = 0;
         auto last_flush = std::chrono::steady_clock::now();
         const bool fast_nonce_patch = patch_nonce_in_pow_buffer(local_buffer, nonce_offset, nonce);
+        const bool use_pipeline = fast_nonce_patch && hashing_supports_pipeline();
+        auto pipeline_buffer = use_pipeline ? local_buffer : std::vector<uint8_t>{};
         uint8_t* nonce_ptr = fast_nonce_patch ? local_buffer.data() + nonce_offset + 1 : nullptr;
+        uint8_t* pipeline_nonce_ptr = use_pipeline ? (pipeline_buffer.data() + nonce_offset + 1) : nullptr;
         Transaction slow_candidate = reward_tx;
 
         while (!stop_.load(std::memory_order_relaxed) && !found.load(std::memory_order_relaxed)) {
@@ -408,33 +485,103 @@ void Miner::mine_reward_transaction(Block& block) {
 
           Hash hash{};
 
-          if (fast_nonce_patch) {
+          if (use_pipeline) {
+            auto patch_nonce = [](uint8_t* ptr, uint64_t value) {
+              for (size_t i = 0; i < 8; ++i) {
+                ptr[i] = static_cast<uint8_t>((value >> (8U * i)) & 0xFFU);
+              }
+            };
+
+            std::array<uint64_t, kRandomXPipelineBatch> batch_nonces{};
+            uint32_t batch_count = 0;
+            for (; batch_count < kRandomXPipelineBatch; ++batch_count) {
+              batch_nonces[batch_count] = nonce;
+              nonce += thread_count;
+            }
+
+            patch_nonce(nonce_ptr, batch_nonces[0]);
+            hash_data_pipeline_begin(local_buffer);
+
+            bool found_in_batch = false;
+            uint64_t found_nonce_local = 0;
+            Hash found_hash_local = Hash::zero();
+
+            for (uint32_t i = 1; i < batch_count; ++i) {
+              uint8_t* next_nonce_ptr = (i & 1U) == 0U ? nonce_ptr : pipeline_nonce_ptr;
+              auto& next_buffer = (i & 1U) == 0U ? local_buffer : pipeline_buffer;
+              patch_nonce(next_nonce_ptr, batch_nonces[i]);
+
+              const Hash out = hash_data_pipeline_next(next_buffer);
+              ++local_hashes;
+              if (hash_meets_target(out, block.meta.tx_pow_difficulty)) {
+                found_in_batch = true;
+                found_nonce_local = batch_nonces[i - 1];
+                found_hash_local = out;
+                break;
+              }
+            }
+
+            const Hash last_out = hash_data_pipeline_last();
+            ++local_hashes;
+            if (!found_in_batch && hash_meets_target(last_out, block.meta.tx_pow_difficulty)) {
+              found_in_batch = true;
+              found_nonce_local = batch_nonces[batch_count - 1];
+              found_hash_local = last_out;
+            }
+
+            if (found_in_batch) {
+              bool expected = false;
+              if (found.compare_exchange_strong(
+                    expected,
+                    true,
+                    std::memory_order_acq_rel,
+                    std::memory_order_relaxed)) {
+                found_nonce.store(found_nonce_local, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(found_lock);
+                found_hash = found_hash_local;
+              }
+              break;
+            }
+          } else if (fast_nonce_patch) {
             for (size_t i = 0; i < 8; ++i) {
               nonce_ptr[i] = static_cast<uint8_t>((nonce >> (8U * i)) & 0xFFU);
             }
             hash = hash_data(local_buffer);
+            nonce += thread_count;
+            ++local_hashes;
+
+            if (hash_meets_target(hash, block.meta.tx_pow_difficulty)) {
+              bool expected = false;
+              if (found.compare_exchange_strong(
+                    expected,
+                    true,
+                    std::memory_order_acq_rel,
+                    std::memory_order_relaxed)) {
+                found_nonce.store(nonce - thread_count, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(found_lock);
+                found_hash = hash;
+              }
+              break;
+            }
           } else {
             slow_candidate.nonce = nonce;
             hash = compute_transaction_hash(slow_candidate);
-          }
-
-          ++local_hashes;
-
-          if (hash_meets_target(hash, block.meta.tx_pow_difficulty)) {
-            bool expected = false;
-            if (found.compare_exchange_strong(
-                  expected,
-                  true,
-                  std::memory_order_acq_rel,
-                  std::memory_order_relaxed)) {
-              found_nonce.store(nonce, std::memory_order_relaxed);
-              std::lock_guard<std::mutex> lock(found_lock);
-              found_hash = hash;
+            ++local_hashes;
+            if (hash_meets_target(hash, block.meta.tx_pow_difficulty)) {
+              bool expected = false;
+              if (found.compare_exchange_strong(
+                    expected,
+                    true,
+                    std::memory_order_acq_rel,
+                    std::memory_order_relaxed)) {
+                found_nonce.store(nonce, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(found_lock);
+                found_hash = hash;
+              }
+              break;
             }
-            break;
+            nonce += thread_count;
           }
-
-          nonce += thread_count;
 
           const auto now = std::chrono::steady_clock::now();
           if (local_hashes >= kHashFlushBatch || (now - last_flush) >= kHashFlushInterval) {
@@ -1012,6 +1159,7 @@ void Miner::run() {
   hash_cfg.jit = config_.randomx_jit;
   hash_cfg.hard_aes = config_.randomx_hard_aes;
   hash_cfg.secure = config_.randomx_secure;
+  const HashingConfig requested_hash_cfg = hash_cfg;
 
   initialize_hashing(hash_cfg, config_.threads);
   const auto runtime_hash = hashing_runtime_profile();
@@ -1021,6 +1169,18 @@ void Miner::run() {
     config_.randomx_jit = runtime_hash.jit;
     config_.randomx_hard_aes = runtime_hash.hard_aes;
     config_.randomx_secure = runtime_hash.secure;
+    if (requested_hash_cfg.hard_aes && !runtime_hash.hard_aes) {
+      push_log("RandomX fallback: HARD_AES requested but disabled by runtime initialization");
+    }
+    if (requested_hash_cfg.jit && !runtime_hash.jit) {
+      push_log("RandomX fallback: JIT requested but disabled by runtime initialization");
+    }
+    if (requested_hash_cfg.huge_pages && !runtime_hash.huge_pages) {
+      push_log("RandomX fallback: huge pages requested but not active");
+    }
+    if (requested_hash_cfg.full_mem && !runtime_hash.full_mem) {
+      push_log("RandomX fallback: full memory requested but light mode is active");
+    }
   } else {
     config_.randomx_full_mem = false;
     config_.randomx_huge_pages = false;
