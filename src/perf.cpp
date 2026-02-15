@@ -133,8 +133,6 @@ bool huge_pages_supported_on_platform() {
 bool can_detect_huge_pages_configuration() {
 #ifdef __linux__
   return true;
-#elif defined(_WIN32)
-  return true;
 #else
   return false;
 #endif

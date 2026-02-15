@@ -62,6 +62,11 @@ public:
     running_.store(true, std::memory_order_relaxed);
 
 #ifdef _WIN32
+    (void)error_message;
+    HANDLE h_in = GetStdHandle(STD_INPUT_HANDLE);
+    if (h_in != INVALID_HANDLE_VALUE) {
+      (void)FlushConsoleInputBuffer(h_in);
+    }
     worker_ = std::thread([this]() { run_windows(); });
     return true;
 #else
@@ -127,7 +132,7 @@ private:
   }
 
   void handle_hotkey(unsigned char ch) {
-    if (ch == 17U || ch == static_cast<unsigned char>('q') || ch == static_cast<unsigned char>('Q')) {
+    if (ch == static_cast<unsigned char>('q') || ch == static_cast<unsigned char>('Q')) {
       trigger_stop();
       return;
     }
