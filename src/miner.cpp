@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -51,7 +52,12 @@ std::vector<Transaction> filter_mempool(const std::vector<Transaction>& mempool)
 
 constexpr uint64_t kHashFlushBatch = 512;
 constexpr std::chrono::milliseconds kHashFlushInterval{500};
+#if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
+constexpr uint32_t kRandomXPipelineBatch = 16;
+#else
 constexpr uint32_t kRandomXPipelineBatch = 8;
+#endif
+constexpr size_t kMaxRuntimeLogLines = 5000;
 
 std::atomic<uint64_t> g_nonce_seed{0x9E3779B97F4A7C15ULL};
 
@@ -64,6 +70,17 @@ uint64_t next_nonce_base() {
   x *= 0x94D049BB133111EBULL;
   x ^= x >> 31U;
   return 0x100000000ULL | (x & 0xFFFFFFFFULL);
+}
+
+inline void write_nonce_le(uint8_t* dest, uint64_t nonce) {
+#if defined(_WIN32) || defined(__LITTLE_ENDIAN__) || \
+  (defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__))
+  std::memcpy(dest, &nonce, sizeof(nonce));
+#else
+  for (size_t i = 0; i < sizeof(nonce); ++i) {
+    dest[i] = static_cast<uint8_t>((nonce >> (8U * i)) & 0xFFU);
+  }
+#endif
 }
 
 } // namespace
@@ -113,6 +130,12 @@ void Miner::add_runtime_note(std::string note) {
 
 void Miner::push_log(std::string line) {
   std::lock_guard<std::mutex> lock(log_mutex_);
+  if (runtime_logs_.size() >= kMaxRuntimeLogLines) {
+    const size_t drop = runtime_logs_.size() - kMaxRuntimeLogLines + 1;
+    runtime_logs_.erase(
+      runtime_logs_.begin(),
+      runtime_logs_.begin() + static_cast<std::vector<std::string>::difference_type>(drop));
+  }
   runtime_logs_.push_back(std::move(line));
 }
 
@@ -138,6 +161,8 @@ void Miner::ensure_mining_workers_started() {
     workers_completed_ = 0;
     work_error_ = nullptr;
     active_cancel_signal_ = nullptr;
+    active_cancel_version_ = nullptr;
+    active_cancel_version_expected_ = 0;
   }
 
   try {
@@ -165,6 +190,8 @@ void Miner::stop_mining_workers() {
     work_active_ = false;
     work_finished_ = true;
     active_cancel_signal_ = nullptr;
+    active_cancel_version_ = nullptr;
+    active_cancel_version_expected_ = 0;
   }
 
   work_cv_.notify_all();
@@ -190,6 +217,8 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
   while (true) {
     MiningJob job;
     std::atomic<bool>* cancel_signal = nullptr;
+    const std::atomic<uint64_t>* cancel_version = nullptr;
+    uint64_t cancel_version_expected = 0;
     uint64_t work_generation = 0;
 
     {
@@ -205,6 +234,8 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
       work_generation = work_generation_;
       job = active_job_;
       cancel_signal = active_cancel_signal_;
+      cancel_version = active_cancel_version_;
+      cancel_version_expected = active_cancel_version_expected_;
     }
 
     uint64_t local_hashes = 0;
@@ -224,7 +255,9 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
       while (!stop_.load(std::memory_order_relaxed) &&
              !work_quit_.load(std::memory_order_relaxed) &&
              !work_found_.load(std::memory_order_relaxed) &&
-             (cancel_signal == nullptr || !cancel_signal->load(std::memory_order_relaxed))) {
+             (cancel_signal == nullptr || !cancel_signal->load(std::memory_order_relaxed)) &&
+             (cancel_version == nullptr ||
+              cancel_version->load(std::memory_order_relaxed) == cancel_version_expected)) {
         if (paused_.load(std::memory_order_relaxed)) {
           std::this_thread::sleep_for(std::chrono::milliseconds(50));
           continue;
@@ -233,12 +266,6 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
         Hash hash{};
 
         if (use_pipeline) {
-          auto patch_nonce = [](uint8_t* ptr, uint64_t value) {
-            for (size_t i = 0; i < 8; ++i) {
-              ptr[i] = static_cast<uint8_t>((value >> (8U * i)) & 0xFFU);
-            }
-          };
-
           std::array<uint64_t, kRandomXPipelineBatch> batch_nonces{};
           uint32_t batch_count = 0;
           for (; batch_count < kRandomXPipelineBatch; ++batch_count) {
@@ -246,7 +273,7 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
             nonce += thread_count;
           }
 
-          patch_nonce(nonce_ptr, batch_nonces[0]);
+          write_nonce_le(nonce_ptr, batch_nonces[0]);
           hash_data_pipeline_begin(local_buffer);
 
           bool found_in_batch = false;
@@ -256,7 +283,7 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
           for (uint32_t i = 1; i < batch_count; ++i) {
             uint8_t* next_nonce_ptr = (i & 1U) == 0U ? nonce_ptr : pipeline_nonce_ptr;
             auto& next_buffer = (i & 1U) == 0U ? local_buffer : pipeline_buffer;
-            patch_nonce(next_nonce_ptr, batch_nonces[i]);
+            write_nonce_le(next_nonce_ptr, batch_nonces[i]);
 
             const Hash out = hash_data_pipeline_next(next_buffer);
             ++local_hashes;
@@ -290,9 +317,7 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
             break;
           }
         } else if (fast_nonce_patch) {
-          for (size_t i = 0; i < 8; ++i) {
-            nonce_ptr[i] = static_cast<uint8_t>((nonce >> (8U * i)) & 0xFFU);
-          }
+          write_nonce_le(nonce_ptr, nonce);
           hash = hash_data(local_buffer);
           nonce += thread_count;
           ++local_hashes;
@@ -486,12 +511,6 @@ void Miner::mine_reward_transaction(Block& block) {
           Hash hash{};
 
           if (use_pipeline) {
-            auto patch_nonce = [](uint8_t* ptr, uint64_t value) {
-              for (size_t i = 0; i < 8; ++i) {
-                ptr[i] = static_cast<uint8_t>((value >> (8U * i)) & 0xFFU);
-              }
-            };
-
             std::array<uint64_t, kRandomXPipelineBatch> batch_nonces{};
             uint32_t batch_count = 0;
             for (; batch_count < kRandomXPipelineBatch; ++batch_count) {
@@ -499,7 +518,7 @@ void Miner::mine_reward_transaction(Block& block) {
               nonce += thread_count;
             }
 
-            patch_nonce(nonce_ptr, batch_nonces[0]);
+            write_nonce_le(nonce_ptr, batch_nonces[0]);
             hash_data_pipeline_begin(local_buffer);
 
             bool found_in_batch = false;
@@ -509,7 +528,7 @@ void Miner::mine_reward_transaction(Block& block) {
             for (uint32_t i = 1; i < batch_count; ++i) {
               uint8_t* next_nonce_ptr = (i & 1U) == 0U ? nonce_ptr : pipeline_nonce_ptr;
               auto& next_buffer = (i & 1U) == 0U ? local_buffer : pipeline_buffer;
-              patch_nonce(next_nonce_ptr, batch_nonces[i]);
+              write_nonce_le(next_nonce_ptr, batch_nonces[i]);
 
               const Hash out = hash_data_pipeline_next(next_buffer);
               ++local_hashes;
@@ -543,9 +562,7 @@ void Miner::mine_reward_transaction(Block& block) {
               break;
             }
           } else if (fast_nonce_patch) {
-            for (size_t i = 0; i < 8; ++i) {
-              nonce_ptr[i] = static_cast<uint8_t>((nonce >> (8U * i)) & 0xFFU);
-            }
+            write_nonce_le(nonce_ptr, nonce);
             hash = hash_data(local_buffer);
             nonce += thread_count;
             ++local_hashes;
@@ -625,15 +642,27 @@ void Miner::mine_reward_transaction(Block& block) {
   block.meta.address_inclusion_filter = build_address_filter(block.transactions);
 }
 
-Miner::MiningResult Miner::mine_block(const MiningJob& job, std::atomic<bool>& cancel_signal) {
+Miner::MiningResult Miner::mine_block(
+  const MiningJob& job,
+  std::atomic<bool>& cancel_signal,
+  const std::atomic<uint64_t>* cancel_version,
+  uint64_t cancel_version_expected) {
   ensure_mining_workers_started();
 
   MiningResult result;
+  auto clear_cancel_refs = [&]() {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    active_cancel_signal_ = nullptr;
+    active_cancel_version_ = nullptr;
+    active_cancel_version_expected_ = 0;
+  };
 
   {
     std::lock_guard<std::mutex> lock(work_mutex_);
     active_job_ = job;
     active_cancel_signal_ = &cancel_signal;
+    active_cancel_version_ = cancel_version;
+    active_cancel_version_expected_ = cancel_version_expected;
     workers_completed_ = 0;
     work_active_ = true;
     work_finished_ = false;
@@ -652,10 +681,15 @@ Miner::MiningResult Miner::mine_block(const MiningJob& job, std::atomic<bool>& c
       return work_finished_ || stop_.load(std::memory_order_relaxed);
     });
     if (!work_finished_) {
+      lock.unlock();
+      clear_cancel_refs();
       return result;
     }
     if (work_error_ != nullptr) {
-      std::rethrow_exception(work_error_);
+      const auto error = work_error_;
+      lock.unlock();
+      clear_cancel_refs();
+      std::rethrow_exception(error);
     }
   }
 
@@ -665,6 +699,8 @@ Miner::MiningResult Miner::mine_block(const MiningJob& job, std::atomic<bool>& c
     std::lock_guard<std::mutex> found_lock(work_found_mutex_);
     result.hash = work_found_hash_;
   }
+
+  clear_cancel_refs();
 
   return result;
 }
@@ -1044,6 +1080,11 @@ void Miner::run_pool() {
     }
   });
 
+  uint64_t prepared_job_version = 0;
+  bool prepared_job_valid = false;
+  MiningJob prepared_job;
+  DifficultyTarget prepared_network_target{};
+
   while (!stop_.load(std::memory_order_relaxed)) {
     if (paused_.load(std::memory_order_relaxed)) {
       set_status("Paused");
@@ -1085,25 +1126,21 @@ void Miner::run_pool() {
       continue;
     }
 
-    MiningJob job = build_pool_job(block, pool_diff_submit);
+    if (!prepared_job_valid || prepared_job_version != active_job_version) {
+      prepared_job = build_pool_job(block, pool_diff_submit);
+      prepared_network_target = calculate_block_difficulty_target(
+        prepared_job.block.meta.block_pow_difficulty,
+        prepared_job.block.transactions.size());
+      prepared_job_version = active_job_version;
+      prepared_job_valid = true;
+    }
 
-    std::atomic<bool> stale{false};
-    std::thread stale_watcher([&]() {
-      while (!stale.load(std::memory_order_relaxed) && !stop_.load(std::memory_order_relaxed)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (job_version.load(std::memory_order_relaxed) != active_job_version) {
-          stale.store(true, std::memory_order_relaxed);
-          set_status("Pool job refreshed");
-          return;
-        }
-      }
-    });
+    MiningJob job = prepared_job;
+    job.base_nonce = next_nonce_base();
 
     set_status("Mining shares");
-    const auto result = mine_block(job, stale);
-
-    stale.store(true, std::memory_order_relaxed);
-    stale_watcher.join();
+    std::atomic<bool> stale{false};
+    const auto result = mine_block(job, stale, &job_version, active_job_version);
 
     if (!result.found) {
       continue;
@@ -1111,10 +1148,7 @@ void Miner::run_pool() {
 
     if (job_version.load(std::memory_order_relaxed) == active_job_version) {
       try {
-        const auto network_target = calculate_block_difficulty_target(
-          job.block.meta.block_pow_difficulty,
-          job.block.transactions.size());
-        const bool full_block_candidate = hash_meets_target(result.hash, network_target);
+        const bool full_block_candidate = hash_meets_target(result.hash, prepared_network_target);
         const bool accepted = submit_candidate(submit_client, job, result);
         if (accepted) {
           if (full_block_candidate) {

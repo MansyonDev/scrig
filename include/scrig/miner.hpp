@@ -45,7 +45,11 @@ private:
   MiningJob build_pool_job(const Block& pool_block, const DifficultyTarget& pool_difficulty);
 
   void mine_reward_transaction(Block& block);
-  MiningResult mine_block(const MiningJob& job, std::atomic<bool>& cancel_signal);
+  MiningResult mine_block(
+    const MiningJob& job,
+    std::atomic<bool>& cancel_signal,
+    const std::atomic<uint64_t>* cancel_version = nullptr,
+    uint64_t cancel_version_expected = 0);
   void ensure_mining_workers_started();
   void stop_mining_workers();
   void mining_worker_loop(uint32_t worker_id, uint32_t thread_count);
@@ -94,6 +98,8 @@ private:
   std::vector<std::thread> mining_workers_;
   MiningJob active_job_{};
   std::atomic<bool>* active_cancel_signal_ = nullptr;
+  const std::atomic<uint64_t>* active_cancel_version_ = nullptr;
+  uint64_t active_cancel_version_expected_ = 0;
   uint64_t work_generation_ = 0;
   uint32_t workers_completed_ = 0;
   bool work_stop_ = false;
