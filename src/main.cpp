@@ -7,6 +7,7 @@
 #include "scrig/ui.hpp"
 
 #include <atomic>
+#include <algorithm>
 #include <csignal>
 #include <chrono>
 #include <cstdlib>
@@ -327,7 +328,7 @@ std::vector<std::string> sanitize_runtime_config(scrig::Config& config) {
   if (config.threads == 0) {
     const auto logical = scrig::logical_cpu_count();
     const auto physical = scrig::physical_cpu_count();
-    config.threads = scrig::recommended_mining_threads();
+    config.threads = scrig::recommended_mining_threads(config.performance_cores_only);
     if (physical > 0) {
       notes.push_back(
         "threads was 0; using recommended mining threads (" + std::to_string(config.threads) +
@@ -336,6 +337,29 @@ std::vector<std::string> sanitize_runtime_config(scrig::Config& config) {
     } else {
       notes.push_back("threads was 0; using logical CPU count (" + std::to_string(config.threads) + ")");
     }
+  }
+
+  if (config.performance_cores_only) {
+    if (!scrig::hybrid_topology_detected()) {
+      notes.push_back("performance_cores_only requested but no hybrid topology detected; using all cores");
+      config.performance_cores_only = false;
+    } else {
+      const auto perf_logical = scrig::performance_core_logical_count();
+      if (config.threads > perf_logical) {
+        notes.push_back(
+          "threads capped to performance-core logical count (" + std::to_string(perf_logical) +
+          ") due to performance_cores_only");
+        config.threads = std::max<uint32_t>(1U, perf_logical);
+      }
+    }
+  }
+
+  if (config.randomx_pipeline_batch > 0) {
+    notes.push_back("randomx_pipeline_batch preset=" + std::to_string(config.randomx_pipeline_batch));
+  }
+  if (config.auto_tune_startup) {
+    notes.push_back(
+      "startup auto-tune enabled: duration=" + std::to_string(config.auto_tune_seconds) + "s");
   }
 
   if (config.pin_threads && !scrig::thread_pinning_supported()) {

@@ -58,6 +58,11 @@ private:
 
   void run_solo();
   void run_pool();
+  void maybe_auto_tune_startup();
+  double benchmark_hashing_throughput(
+    uint32_t threads,
+    uint32_t pipeline_batch,
+    std::chrono::seconds duration);
 
   void refresh_stats_loop();
   void set_status(const std::string& status);

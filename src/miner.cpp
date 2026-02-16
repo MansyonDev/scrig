@@ -5,9 +5,11 @@
 #include "scrig/ui.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <limits>
 #include <mutex>
@@ -50,16 +52,20 @@ std::vector<Transaction> filter_mempool(const std::vector<Transaction>& mempool)
   return out;
 }
 
-constexpr uint64_t kHashFlushBatch = 512;
-constexpr std::chrono::milliseconds kHashFlushInterval{500};
+constexpr uint64_t kHashFlushBatch = 4096;
+constexpr std::chrono::milliseconds kHashFlushInterval{1500};
+constexpr uint32_t kHotLoopControlCheckInterval = 8;
+constexpr uint32_t kRandomXPipelineBatchMin = 4;
+constexpr uint32_t kRandomXPipelineBatchMax = 32;
 #if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
-constexpr uint32_t kRandomXPipelineBatch = 16;
+constexpr uint32_t kRandomXPipelineBatchDefault = 16;
 #else
-constexpr uint32_t kRandomXPipelineBatch = 8;
+constexpr uint32_t kRandomXPipelineBatchDefault = 8;
 #endif
 constexpr size_t kMaxRuntimeLogLines = 5000;
 
 std::atomic<uint64_t> g_nonce_seed{0x9E3779B97F4A7C15ULL};
+std::atomic<uint32_t> g_pipeline_batch{kRandomXPipelineBatchDefault};
 
 uint64_t next_nonce_base() {
   // SplitMix64-style generator, cheap and deterministic enough for nonce spacing.
@@ -81,6 +87,21 @@ inline void write_nonce_le(uint8_t* dest, uint64_t nonce) {
     dest[i] = static_cast<uint8_t>((nonce >> (8U * i)) & 0xFFU);
   }
 #endif
+}
+
+uint32_t clamp_pipeline_batch(uint32_t batch) {
+  if (batch == 0) {
+    return kRandomXPipelineBatchDefault;
+  }
+  return std::clamp(batch, kRandomXPipelineBatchMin, kRandomXPipelineBatchMax);
+}
+
+uint32_t current_pipeline_batch() {
+  return clamp_pipeline_batch(g_pipeline_batch.load(std::memory_order_relaxed));
+}
+
+void set_pipeline_batch(uint32_t batch) {
+  g_pipeline_batch.store(clamp_pipeline_batch(batch), std::memory_order_relaxed);
 }
 
 } // namespace
@@ -206,9 +227,9 @@ void Miner::stop_mining_workers() {
 }
 
 void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
-  (void)apply_mining_thread_priority(worker_id, thread_count);
+  (void)apply_mining_thread_priority(worker_id, thread_count, config_.performance_cores_only);
   if (config_.pin_threads) {
-    (void)pin_current_thread(worker_id, thread_count);
+    (void)pin_current_thread(worker_id, thread_count, config_.performance_cores_only);
   }
   if (config_.numa_bind) {
     (void)bind_current_thread_numa(worker_id, thread_count);
@@ -253,23 +274,31 @@ void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
       Block slow_candidate = job.block;
       slow_candidate.meta.hash.reset();
 
-      while (!stop_.load(std::memory_order_relaxed) &&
-             !work_quit_.load(std::memory_order_relaxed) &&
-             !work_found_.load(std::memory_order_relaxed) &&
-             (cancel_signal == nullptr || !cancel_signal->load(std::memory_order_relaxed)) &&
-             (cancel_version == nullptr ||
-              cancel_version->load(std::memory_order_relaxed) == cancel_version_expected)) {
-        if (paused_.load(std::memory_order_relaxed)) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(50));
-          continue;
+      uint32_t control_check_counter = kHotLoopControlCheckInterval;
+      while (true) {
+        if (++control_check_counter >= kHotLoopControlCheckInterval) {
+          control_check_counter = 0;
+          if (stop_.load(std::memory_order_relaxed) ||
+              work_quit_.load(std::memory_order_relaxed) ||
+              work_found_.load(std::memory_order_relaxed) ||
+              (cancel_signal != nullptr && cancel_signal->load(std::memory_order_relaxed)) ||
+              (cancel_version != nullptr &&
+               cancel_version->load(std::memory_order_relaxed) != cancel_version_expected)) {
+            break;
+          }
+          if (paused_.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+          }
         }
 
         Hash hash{};
 
         if (use_pipeline) {
-          std::array<uint64_t, kRandomXPipelineBatch> batch_nonces{};
+          const uint32_t pipeline_batch = current_pipeline_batch();
+          std::array<uint64_t, kRandomXPipelineBatchMax> batch_nonces{};
           uint32_t batch_count = 0;
-          for (; batch_count < kRandomXPipelineBatch; ++batch_count) {
+          for (; batch_count < pipeline_batch; ++batch_count) {
             batch_nonces[batch_count] = nonce;
             nonce += thread_count;
           }
@@ -492,9 +521,9 @@ void Miner::mine_reward_transaction(Block& block) {
   for (uint32_t worker_id = 0; worker_id < thread_count; ++worker_id) {
     workers.emplace_back([&, worker_id]() {
       try {
-        (void)apply_mining_thread_priority(worker_id, thread_count);
+        (void)apply_mining_thread_priority(worker_id, thread_count, config_.performance_cores_only);
         if (config_.pin_threads) {
-          (void)pin_current_thread(worker_id, thread_count);
+          (void)pin_current_thread(worker_id, thread_count, config_.performance_cores_only);
         }
         if (config_.numa_bind) {
           (void)bind_current_thread_numa(worker_id, thread_count);
@@ -511,18 +540,26 @@ void Miner::mine_reward_transaction(Block& block) {
         uint8_t* pipeline_nonce_ptr = use_pipeline ? (pipeline_buffer.data() + nonce_offset + 1) : nullptr;
         Transaction slow_candidate = reward_tx;
 
-        while (!stop_.load(std::memory_order_relaxed) && !found.load(std::memory_order_relaxed)) {
-          if (paused_.load(std::memory_order_relaxed)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            continue;
+        uint32_t control_check_counter = kHotLoopControlCheckInterval;
+        while (true) {
+          if (++control_check_counter >= kHotLoopControlCheckInterval) {
+            control_check_counter = 0;
+            if (stop_.load(std::memory_order_relaxed) || found.load(std::memory_order_relaxed)) {
+              break;
+            }
+            if (paused_.load(std::memory_order_relaxed)) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(50));
+              continue;
+            }
           }
 
           Hash hash{};
 
           if (use_pipeline) {
-            std::array<uint64_t, kRandomXPipelineBatch> batch_nonces{};
+            const uint32_t pipeline_batch = current_pipeline_batch();
+            std::array<uint64_t, kRandomXPipelineBatchMax> batch_nonces{};
             uint32_t batch_count = 0;
-            for (; batch_count < kRandomXPipelineBatch; ++batch_count) {
+            for (; batch_count < pipeline_batch; ++batch_count) {
               batch_nonces[batch_count] = nonce;
               nonce += thread_count;
             }
@@ -736,10 +773,204 @@ bool Miner::submit_candidate(NodeClient& client, MiningJob& job, const MiningRes
   return accepted;
 }
 
+double Miner::benchmark_hashing_throughput(
+  uint32_t threads,
+  uint32_t pipeline_batch,
+  std::chrono::seconds duration) {
+  if (duration.count() <= 0) {
+    return 0.0;
+  }
+
+  const uint32_t thread_count = std::max<uint32_t>(1U, threads);
+  const uint32_t bench_batch = clamp_pipeline_batch(pipeline_batch);
+  const bool use_pipeline = hashing_supports_pipeline();
+
+  // Minimal stable payload with a fixed-width nonce varint at a known offset.
+  std::vector<uint8_t> base_buffer(160, 0x42U);
+  const size_t nonce_offset = 24;
+  base_buffer[nonce_offset] = 253U;
+  for (size_t i = 0; i < 8; ++i) {
+    base_buffer[nonce_offset + 1 + i] = 0U;
+  }
+
+  std::atomic<uint64_t> total_hashes{0};
+  std::atomic<bool> stop_now{false};
+  const auto start = std::chrono::steady_clock::now();
+  const auto deadline = start + duration;
+
+  std::vector<std::thread> workers;
+  workers.reserve(thread_count);
+
+  for (uint32_t worker_id = 0; worker_id < thread_count; ++worker_id) {
+    workers.emplace_back([&, worker_id]() {
+      (void)apply_mining_thread_priority(worker_id, thread_count, config_.performance_cores_only);
+      if (config_.pin_threads) {
+        (void)pin_current_thread(worker_id, thread_count, config_.performance_cores_only);
+      }
+      if (config_.numa_bind) {
+        (void)bind_current_thread_numa(worker_id, thread_count);
+      }
+
+      auto local_buffer = base_buffer;
+      uint8_t* nonce_ptr = local_buffer.data() + nonce_offset + 1;
+      auto pipeline_buffer = use_pipeline ? local_buffer : std::vector<uint8_t>{};
+      uint8_t* pipeline_nonce_ptr = use_pipeline ? (pipeline_buffer.data() + nonce_offset + 1) : nullptr;
+
+      uint64_t nonce = next_nonce_base() + worker_id;
+      uint64_t local_hashes = 0;
+      uint32_t control_check_counter = kHotLoopControlCheckInterval;
+
+      while (true) {
+        if (++control_check_counter >= kHotLoopControlCheckInterval) {
+          control_check_counter = 0;
+          if (stop_.load(std::memory_order_relaxed) || stop_now.load(std::memory_order_relaxed)) {
+            break;
+          }
+          if (std::chrono::steady_clock::now() >= deadline) {
+            stop_now.store(true, std::memory_order_relaxed);
+            break;
+          }
+        }
+
+        if (use_pipeline) {
+          std::array<uint64_t, kRandomXPipelineBatchMax> batch_nonces{};
+          uint32_t batch_count = 0;
+          for (; batch_count < bench_batch; ++batch_count) {
+            batch_nonces[batch_count] = nonce;
+            nonce += thread_count;
+          }
+
+          write_nonce_le(nonce_ptr, batch_nonces[0]);
+          hash_data_pipeline_begin(local_buffer);
+          for (uint32_t i = 1; i < batch_count; ++i) {
+            uint8_t* next_nonce_ptr = (i & 1U) == 0U ? nonce_ptr : pipeline_nonce_ptr;
+            auto& next_buffer = (i & 1U) == 0U ? local_buffer : pipeline_buffer;
+            write_nonce_le(next_nonce_ptr, batch_nonces[i]);
+            (void)hash_data_pipeline_next(next_buffer);
+            ++local_hashes;
+          }
+          (void)hash_data_pipeline_last();
+          ++local_hashes;
+        } else {
+          write_nonce_le(nonce_ptr, nonce);
+          nonce += thread_count;
+          (void)hash_data(local_buffer);
+          ++local_hashes;
+        }
+      }
+
+      total_hashes.fetch_add(local_hashes, std::memory_order_relaxed);
+    });
+  }
+
+  for (auto& worker : workers) {
+    worker.join();
+  }
+
+  const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  if (elapsed <= 0.0) {
+    return 0.0;
+  }
+  return static_cast<double>(total_hashes.load(std::memory_order_relaxed)) / elapsed;
+}
+
+void Miner::maybe_auto_tune_startup() {
+  set_pipeline_batch(config_.randomx_pipeline_batch);
+
+  if (!config_.auto_tune_startup || stop_.load(std::memory_order_relaxed)) {
+    return;
+  }
+
+  const uint32_t logical = logical_cpu_count();
+  const uint32_t current_threads = std::max<uint32_t>(1U, config_.threads);
+  const uint32_t recommended_threads = std::max<uint32_t>(
+    1U,
+    recommended_mining_threads(config_.performance_cores_only));
+  const uint32_t requested_total_seconds = std::clamp<uint32_t>(config_.auto_tune_seconds, 6U, 120U);
+
+  std::vector<uint32_t> thread_candidates{
+    current_threads,
+    recommended_threads,
+    recommended_threads > 1 ? (recommended_threads - 1U) : 1U,
+    std::min<uint32_t>(logical, recommended_threads + 1U),
+  };
+  for (auto& t : thread_candidates) {
+    t = std::clamp<uint32_t>(t, 1U, std::max<uint32_t>(1U, logical));
+  }
+  std::sort(thread_candidates.begin(), thread_candidates.end());
+  thread_candidates.erase(std::unique(thread_candidates.begin(), thread_candidates.end()), thread_candidates.end());
+
+  std::vector<uint32_t> batch_candidates{current_pipeline_batch(), 8U, 16U, 24U, 32U};
+  for (auto& b : batch_candidates) {
+    b = clamp_pipeline_batch(b);
+  }
+  std::sort(batch_candidates.begin(), batch_candidates.end());
+  batch_candidates.erase(std::unique(batch_candidates.begin(), batch_candidates.end()), batch_candidates.end());
+
+  const uint32_t bench_cases =
+    static_cast<uint32_t>(thread_candidates.size() + (hashing_supports_pipeline() ? batch_candidates.size() : 0U));
+  const uint32_t per_case_seconds =
+    std::max<uint32_t>(2U, requested_total_seconds / std::max<uint32_t>(1U, bench_cases));
+  const auto bench_duration = std::chrono::seconds(per_case_seconds);
+
+  push_log(
+    "Auto-tune: benchmarking " + std::to_string(bench_cases) +
+    " case(s), " + std::to_string(per_case_seconds) + "s each");
+
+  uint32_t best_threads = current_threads;
+  uint32_t best_batch = current_pipeline_batch();
+  double best_rate = benchmark_hashing_throughput(best_threads, best_batch, bench_duration);
+  push_log(
+    "Auto-tune: baseline threads=" + std::to_string(best_threads) +
+    " pipeline_batch=" + std::to_string(best_batch) +
+    " rate=" + human_hashrate(best_rate));
+
+  for (const auto candidate_threads : thread_candidates) {
+    if (stop_.load(std::memory_order_relaxed)) {
+      return;
+    }
+    const double rate = benchmark_hashing_throughput(candidate_threads, best_batch, bench_duration);
+    push_log(
+      "Auto-tune: threads=" + std::to_string(candidate_threads) +
+      " rate=" + human_hashrate(rate));
+    if (rate > best_rate) {
+      best_rate = rate;
+      best_threads = candidate_threads;
+    }
+  }
+
+  if (hashing_supports_pipeline()) {
+    for (const auto candidate_batch : batch_candidates) {
+      if (stop_.load(std::memory_order_relaxed)) {
+        return;
+      }
+      const double rate = benchmark_hashing_throughput(best_threads, candidate_batch, bench_duration);
+      push_log(
+        "Auto-tune: pipeline_batch=" + std::to_string(candidate_batch) +
+        " rate=" + human_hashrate(rate));
+      if (rate > best_rate) {
+        best_rate = rate;
+        best_batch = candidate_batch;
+      }
+    }
+  }
+
+  config_.threads = best_threads;
+  config_.randomx_pipeline_batch = best_batch;
+  set_pipeline_batch(best_batch);
+  push_log(
+    "Auto-tune result: threads=" + std::to_string(best_threads) +
+    " pipeline_batch=" + std::to_string(best_batch) +
+    " tuned_rate=" + human_hashrate(best_rate));
+}
+
 void Miner::refresh_stats_loop() {
   uint64_t last_hashes = total_hashes_.load(std::memory_order_relaxed);
   auto last_tick = std::chrono::steady_clock::now();
   uint64_t last_summary_uptime = 0;
+  std::deque<std::pair<std::chrono::steady_clock::time_point, uint64_t>> hashrate_samples;
+  constexpr auto kHashrateWindow = std::chrono::seconds(8);
+  constexpr auto kHashrateWindowMaxAge = std::chrono::seconds(12);
 
   while (!shutdown_ui_.load(std::memory_order_relaxed)) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -751,10 +982,32 @@ void Miner::refresh_stats_loop() {
     if (elapsed > 0.0) {
       const auto delta = static_cast<double>(current_hashes - last_hashes);
       const double instant_rate = delta / elapsed;
+      hashrate_samples.emplace_back(now, current_hashes);
+      while (!hashrate_samples.empty() && (now - hashrate_samples.front().first) > kHashrateWindowMaxAge) {
+        hashrate_samples.pop_front();
+      }
+
+      double window_rate = instant_rate;
+      if (!hashrate_samples.empty()) {
+        auto sample = hashrate_samples.front();
+        for (auto it = hashrate_samples.rbegin(); it != hashrate_samples.rend(); ++it) {
+          if ((now - it->first) >= kHashrateWindow) {
+            sample = *it;
+            break;
+          }
+        }
+
+        const auto window_seconds = std::chrono::duration<double>(now - sample.first).count();
+        if (window_seconds > 0.5) {
+          const auto window_delta = static_cast<double>(current_hashes - sample.second);
+          window_rate = window_delta / window_seconds;
+        }
+      }
+
       const double prev_rate = current_hashrate_.load(std::memory_order_relaxed);
       const double smoothed_rate = (prev_rate <= 0.0)
-        ? instant_rate
-        : (prev_rate * 0.75 + instant_rate * 0.25);
+        ? window_rate
+        : (prev_rate * 0.85 + window_rate * 0.15);
       current_hashrate_.store(smoothed_rate, std::memory_order_relaxed);
     }
 
@@ -1231,6 +1484,11 @@ void Miner::run() {
     config_.randomx_hard_aes = false;
     config_.randomx_secure = false;
   }
+
+  if (config_.randomx_pipeline_batch == 0) {
+    config_.randomx_pipeline_batch = current_pipeline_batch();
+  }
+  maybe_auto_tune_startup();
 
   start_time_ = std::chrono::steady_clock::now();
   shutdown_ui_.store(false, std::memory_order_relaxed);

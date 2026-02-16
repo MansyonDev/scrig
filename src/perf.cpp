@@ -570,11 +570,51 @@ const AffinityPlanData& affinity_plan() {
   return g_affinity_plan;
 }
 
-const AffinitySlot* affinity_slot_for_worker(uint32_t worker_index) {
+bool hybrid_topology_detected_internal() {
+  const auto& plan = affinity_plan();
+  if (plan.slots.empty()) {
+    return false;
+  }
+
+  const uint32_t first_tier = plan.slots.front().performance_tier;
+  for (const auto& slot : plan.slots) {
+    if (slot.performance_tier != first_tier) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint32_t performance_prefix_count() {
+  const auto& plan = affinity_plan();
+  if (plan.slots.empty()) {
+    return 0;
+  }
+
+  const uint32_t first_tier = plan.slots.front().performance_tier;
+  uint32_t count = 0;
+  for (const auto& slot : plan.slots) {
+    if (slot.performance_tier != first_tier) {
+      break;
+    }
+    ++count;
+  }
+  return count;
+}
+
+const AffinitySlot* affinity_slot_for_worker(uint32_t worker_index, bool performance_cores_only) {
   const auto& plan = affinity_plan();
   if (plan.slots.empty()) {
     return nullptr;
   }
+
+  if (performance_cores_only && hybrid_topology_detected_internal()) {
+    const uint32_t perf_count = performance_prefix_count();
+    if (perf_count > 0) {
+      return &plan.slots[worker_index % perf_count];
+    }
+  }
+
   return &plan.slots[worker_index % static_cast<uint32_t>(plan.slots.size())];
 }
 
@@ -589,19 +629,56 @@ uint32_t physical_cpu_count() {
   return plan.physical_cores == 0 ? logical_cpu_count_fallback() : plan.physical_cores;
 }
 
-uint32_t recommended_mining_threads() {
-  const uint32_t logical = logical_cpu_count();
-  const uint32_t physical = physical_cpu_count();
+uint32_t recommended_mining_threads(bool performance_cores_only) {
+  const uint32_t logical = performance_cores_only ? performance_core_logical_count() : logical_cpu_count();
+  const uint32_t physical = performance_cores_only ? performance_core_physical_count() : physical_cpu_count();
   if (physical == 0 || physical > logical) {
     return logical;
   }
   return std::max<uint32_t>(1U, physical);
 }
 
+bool hybrid_topology_detected() {
+  return hybrid_topology_detected_internal();
+}
+
+uint32_t performance_core_logical_count() {
+  const auto& plan = affinity_plan();
+  if (plan.slots.empty()) {
+    return logical_cpu_count_fallback();
+  }
+
+  if (!hybrid_topology_detected_internal()) {
+    return static_cast<uint32_t>(plan.slots.size());
+  }
+
+  return performance_prefix_count();
+}
+
+uint32_t performance_core_physical_count() {
+  const auto& plan = affinity_plan();
+  if (plan.slots.empty()) {
+    return logical_cpu_count_fallback();
+  }
+
+  const uint32_t perf_count = performance_core_logical_count();
+  if (perf_count == 0) {
+    return 0;
+  }
+
+  std::set<std::pair<uint32_t, uint32_t>> cores;
+  for (uint32_t i = 0; i < perf_count; ++i) {
+    const auto& slot = plan.slots[i];
+    cores.emplace(slot.package_id, slot.core_id);
+  }
+  return static_cast<uint32_t>(cores.size());
+}
+
 std::string cpu_runtime_summary() {
   const auto logical = logical_cpu_count();
   const auto physical = physical_cpu_count();
-  const auto recommended = recommended_mining_threads();
+  const auto recommended = recommended_mining_threads(false);
+  const auto recommended_perf = recommended_mining_threads(true);
   const auto source = affinity_plan_source();
 
   const char* arch = "unknown";
@@ -626,6 +703,7 @@ std::string cpu_runtime_summary() {
       << " physical=" << physical
       << " logical=" << logical
       << " recommended_threads=" << recommended
+      << " perf_threads=" << recommended_perf
       << " affinity_source=" << source;
   return out.str();
 }
@@ -640,7 +718,7 @@ std::string affinity_profile_summary(uint32_t worker_count, size_t max_workers) 
     return "affinity unavailable";
   }
 
-  const uint32_t active_workers = worker_count == 0 ? recommended_mining_threads() : worker_count;
+  const uint32_t active_workers = worker_count == 0 ? recommended_mining_threads(false) : worker_count;
   const size_t preview = std::min<size_t>(max_workers, static_cast<size_t>(active_workers));
 
   std::ostringstream out;
@@ -669,9 +747,9 @@ std::string affinity_profile_summary(uint32_t worker_count, size_t max_workers) 
   return out.str();
 }
 
-bool pin_current_thread(uint32_t worker_index, uint32_t worker_count) {
+bool pin_current_thread(uint32_t worker_index, uint32_t worker_count, bool performance_cores_only) {
   (void)worker_count;
-  const auto* slot = affinity_slot_for_worker(worker_index);
+  const auto* slot = affinity_slot_for_worker(worker_index, performance_cores_only);
   if (slot == nullptr) {
     return false;
   }
@@ -732,11 +810,14 @@ bool bind_current_thread_numa(uint32_t worker_index, uint32_t worker_count) {
 #endif
 }
 
-bool apply_mining_thread_priority(uint32_t worker_index, uint32_t worker_count) {
+bool apply_mining_thread_priority(uint32_t worker_index, uint32_t worker_count, bool performance_cores_only) {
   (void)worker_count;
+#if !defined(_WIN32)
+  (void)performance_cores_only;
+#endif
 
 #ifdef _WIN32
-  const auto* slot = affinity_slot_for_worker(worker_index);
+  const auto* slot = affinity_slot_for_worker(worker_index, performance_cores_only);
   if (slot != nullptr) {
 #if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0601
     PROCESSOR_NUMBER proc{};

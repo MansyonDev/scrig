@@ -968,11 +968,24 @@ DifficultyTarget calculate_block_difficulty_target(const DifficultyTarget& block
 }
 
 bool hash_meets_target(const Hash& hash, const DifficultyTarget& target) {
-  for (size_t i = 0; i < 32; ++i) {
-    if (hash.bytes[i] < target[i]) {
+  auto load_be_u64 = [](const uint8_t* data) -> uint64_t {
+    return (static_cast<uint64_t>(data[0]) << 56U) |
+           (static_cast<uint64_t>(data[1]) << 48U) |
+           (static_cast<uint64_t>(data[2]) << 40U) |
+           (static_cast<uint64_t>(data[3]) << 32U) |
+           (static_cast<uint64_t>(data[4]) << 24U) |
+           (static_cast<uint64_t>(data[5]) << 16U) |
+           (static_cast<uint64_t>(data[6]) << 8U) |
+           static_cast<uint64_t>(data[7]);
+  };
+
+  for (size_t i = 0; i < 32; i += 8) {
+    const uint64_t h = load_be_u64(hash.bytes.data() + i);
+    const uint64_t t = load_be_u64(target.data() + i);
+    if (h < t) {
       return true;
     }
-    if (hash.bytes[i] > target[i]) {
+    if (h > t) {
       return false;
     }
   }
