@@ -206,6 +206,7 @@ void Miner::stop_mining_workers() {
 }
 
 void Miner::mining_worker_loop(uint32_t worker_id, uint32_t thread_count) {
+  (void)apply_mining_thread_priority(worker_id, thread_count);
   if (config_.pin_threads) {
     (void)pin_current_thread(worker_id, thread_count);
   }
@@ -491,6 +492,14 @@ void Miner::mine_reward_transaction(Block& block) {
   for (uint32_t worker_id = 0; worker_id < thread_count; ++worker_id) {
     workers.emplace_back([&, worker_id]() {
       try {
+        (void)apply_mining_thread_priority(worker_id, thread_count);
+        if (config_.pin_threads) {
+          (void)pin_current_thread(worker_id, thread_count);
+        }
+        if (config_.numa_bind) {
+          (void)bind_current_thread_numa(worker_id, thread_count);
+        }
+
         auto local_buffer = pow_template;
         uint64_t nonce = reward_tx.nonce + worker_id;
         uint64_t local_hashes = 0;

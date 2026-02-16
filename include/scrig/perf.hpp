@@ -14,6 +14,7 @@ std::string affinity_plan_source();
 std::string affinity_profile_summary(uint32_t worker_count, size_t max_workers = 8);
 bool pin_current_thread(uint32_t worker_index, uint32_t worker_count);
 bool bind_current_thread_numa(uint32_t worker_index, uint32_t worker_count);
+bool apply_mining_thread_priority(uint32_t worker_index, uint32_t worker_count);
 bool thread_pinning_supported();
 bool numa_binding_supported();
 bool huge_pages_supported_on_platform();

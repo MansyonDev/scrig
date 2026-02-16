@@ -346,8 +346,7 @@ std::vector<std::string> sanitize_runtime_config(scrig::Config& config) {
   } else if (config.randomx_huge_pages &&
              scrig::can_detect_huge_pages_configuration() &&
              !scrig::huge_pages_configured()) {
-    config.randomx_huge_pages = false;
-    notes.push_back("randomx_huge_pages disabled: huge pages are not configured on this host");
+    notes.push_back("randomx_huge_pages requested: host precheck reports not configured; runtime will retry/fallback");
   }
 
 #if defined(__APPLE__)

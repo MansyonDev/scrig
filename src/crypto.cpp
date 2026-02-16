@@ -591,17 +591,9 @@ void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
   const randomx_flags supported_flags = randomx_get_flags();
   randomx_flags base_flags = RANDOMX_FLAG_DEFAULT;
 
-  bool allow_speculative_flags = false;
-#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
-  allow_speculative_flags = true;
-#endif
-
   if (config.jit) {
     if ((supported_flags & RANDOMX_FLAG_JIT) != 0) {
       base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_JIT);
-    } else if (allow_speculative_flags) {
-      base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_JIT);
-      std::cerr << "[RANDOMX] JIT requested, but runtime capability probe reports unavailable. Trying anyway.\n";
     } else {
       std::cerr << "[RANDOMX] JIT requested but unavailable on this runtime/build. Continuing without JIT.\n";
     }
@@ -609,9 +601,6 @@ void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
   if (config.hard_aes) {
     if ((supported_flags & RANDOMX_FLAG_HARD_AES) != 0) {
       base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_HARD_AES);
-    } else if (allow_speculative_flags) {
-      base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_HARD_AES);
-      std::cerr << "[RANDOMX] HARD_AES requested, but runtime capability probe reports unavailable. Trying anyway.\n";
     } else {
       std::cerr << "[RANDOMX] HARD_AES requested but unavailable on this runtime/build. Continuing with soft AES.\n";
     }

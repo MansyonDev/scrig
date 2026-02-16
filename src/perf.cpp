@@ -19,6 +19,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <processthreadsapi.h>
+#include <winbase.h>
 #elif defined(__linux__)
 #include <pthread.h>
 #include <sched.h>
@@ -726,6 +728,35 @@ bool bind_current_thread_numa(uint32_t worker_index, uint32_t worker_count) {
 
   return numa_run_on_node(node) == 0;
 #else
+  return false;
+#endif
+}
+
+bool apply_mining_thread_priority(uint32_t worker_index, uint32_t worker_count) {
+  (void)worker_count;
+
+#ifdef _WIN32
+  const auto* slot = affinity_slot_for_worker(worker_index);
+  if (slot != nullptr) {
+#if defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0601
+    PROCESSOR_NUMBER proc{};
+    proc.Group = slot->group;
+    proc.Number = static_cast<BYTE>(slot->os_cpu % 64U);
+    proc.Reserved = 0;
+    (void)SetThreadIdealProcessorEx(GetCurrentThread(), &proc, nullptr);
+#endif
+  }
+
+  const BOOL priority_ok = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+  // Disable dynamic priority boosts to keep worker throughput stable.
+  (void)SetThreadPriorityBoost(GetCurrentThread(), TRUE);
+  return priority_ok != 0;
+#elif defined(__linux__)
+  sched_param param{};
+  param.sched_priority = 0;
+  return pthread_setschedparam(pthread_self(), SCHED_BATCH, &param) == 0;
+#else
+  (void)worker_index;
   return false;
 #endif
 }
