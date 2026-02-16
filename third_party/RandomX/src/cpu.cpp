@@ -29,7 +29,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "cpu.hpp"
 #include <cstring>
 
-#if defined(_M_X64) || defined(__x86_64__)
+#if defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__)
 	#define HAVE_CPUID
 	#if defined(_MSC_VER)
 		#include <intrin.h>

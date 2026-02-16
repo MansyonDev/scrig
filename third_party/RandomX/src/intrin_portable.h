@@ -49,7 +49,7 @@ constexpr int RoundUp = 2;
 constexpr int RoundToZero = 3;
 
 //MSVC doesn't define __SSE2__, so we have to define it manually if SSE2 is available
-#if !defined(__SSE2__) && (defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP == 2))
+#if !defined(__SSE2__) && (defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP == 2))
 #define __SSE2__ 1
 #endif
 

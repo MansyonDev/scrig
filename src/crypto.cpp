@@ -19,6 +19,10 @@
 
 #ifdef _MSC_VER
 #include <intrin.h>
+#if defined(_WIN32) && (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
+#include <windows.h>
+#include <immintrin.h>
+#endif
 #endif
 
 namespace scrig {
@@ -510,6 +514,89 @@ struct RandomXState {
 RandomXState g_randomx_state;
 std::once_flag g_randomx_once;
 
+bool hard_aes_runtime_probe_supported() {
+#if defined(_WIN32) && defined(_MSC_VER) && \
+  (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool hard_aes_runtime_probe() {
+#if defined(_WIN32) && defined(_MSC_VER) && \
+  (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
+  __try {
+    __m128i state = _mm_setzero_si128();
+    const __m128i key = _mm_set_epi32(0xA5A5A5A5, 0xC3C3C3C3, 0x5A5A5A5A, 0x3C3C3C3C);
+    state = _mm_aesenc_si128(state, key);
+    volatile int sink = _mm_cvtsi128_si32(state);
+    (void)sink;
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+#else
+  return false;
+#endif
+}
+
+#if defined(_WIN32) && defined(_MSC_VER) && \
+  (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
+bool windows_cpuid_reports_aes() {
+  int info[4] = {0, 0, 0, 0};
+  __cpuid(info, 1);
+  return (info[2] & (1 << 25)) != 0;
+}
+
+struct WindowsCpuDiag {
+  bool aes = false;
+  bool avx2 = false;
+  bool ssse3 = false;
+  bool hypervisor_present = false;
+  std::string vendor;
+  std::string hypervisor_vendor;
+};
+
+WindowsCpuDiag windows_cpu_diag() {
+  WindowsCpuDiag diag{};
+  int info[4] = {0, 0, 0, 0};
+
+  __cpuid(info, 0);
+  const int max_leaf = info[0];
+  char vendor[13] = {};
+  std::memcpy(vendor + 0, &info[1], 4);
+  std::memcpy(vendor + 4, &info[3], 4);
+  std::memcpy(vendor + 8, &info[2], 4);
+  vendor[12] = '\0';
+  diag.vendor = vendor;
+
+  if (max_leaf >= 1) {
+    __cpuid(info, 1);
+    diag.aes = (info[2] & (1 << 25)) != 0;
+    diag.ssse3 = (info[2] & (1 << 9)) != 0;
+    diag.hypervisor_present = (info[2] & (1u << 31)) != 0;
+  }
+
+  if (max_leaf >= 7) {
+    __cpuidex(info, 7, 0);
+    diag.avx2 = (info[1] & (1 << 5)) != 0;
+  }
+
+  if (diag.hypervisor_present) {
+    __cpuid(info, 0x40000000);
+    char hv_vendor[13] = {};
+    std::memcpy(hv_vendor + 0, &info[1], 4);
+    std::memcpy(hv_vendor + 4, &info[2], 4);
+    std::memcpy(hv_vendor + 8, &info[3], 4);
+    hv_vendor[12] = '\0';
+    diag.hypervisor_vendor = hv_vendor;
+  }
+
+  return diag;
+}
+#endif
+
 bool platform_supports_large_pages_hint() {
 #if defined(__APPLE__)
   return false;
@@ -590,6 +677,8 @@ bool try_init_randomx_once(randomx_flags flags, bool full_mem, uint32_t init_thr
 void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
   const randomx_flags supported_flags = randomx_get_flags();
   randomx_flags base_flags = RANDOMX_FLAG_DEFAULT;
+  // Keep RandomX's preferred Argon2 implementation flags (AVX2/SSSE3) when available.
+  base_flags = static_cast<randomx_flags>(base_flags | (supported_flags & RANDOMX_FLAG_ARGON2));
 
   if (config.jit) {
     if ((supported_flags & RANDOMX_FLAG_JIT) != 0) {
@@ -599,9 +688,28 @@ void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
     }
   }
   if (config.hard_aes) {
+    const bool probe_supported = hard_aes_runtime_probe_supported();
+    const bool probe_ok = probe_supported && hard_aes_runtime_probe();
     if ((supported_flags & RANDOMX_FLAG_HARD_AES) != 0) {
       base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_HARD_AES);
+    } else if (probe_ok) {
+      base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_HARD_AES);
+      std::cerr << "[RANDOMX] HARD_AES not reported by CPUID probe; enabling after runtime AES instruction test.\n";
     } else {
+#if defined(_WIN32) && defined(_MSC_VER) && \
+  (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
+      const auto diag = windows_cpu_diag();
+      std::cerr << "[RANDOMX] Windows AES diagnostics: cpuid_aes="
+                << (diag.aes ? "1" : "0")
+                << " ssse3=" << (diag.ssse3 ? "1" : "0")
+                << " avx2=" << (diag.avx2 ? "1" : "0")
+                << " hypervisor=" << (diag.hypervisor_present ? "1" : "0")
+                << " vendor=" << diag.vendor;
+      if (diag.hypervisor_present && !diag.hypervisor_vendor.empty()) {
+        std::cerr << " hypervisor_vendor=" << diag.hypervisor_vendor;
+      }
+      std::cerr << " runtime_probe=" << (probe_ok ? "pass" : (probe_supported ? "fail" : "n/a")) << "\n";
+#endif
       std::cerr << "[RANDOMX] HARD_AES requested but unavailable on this runtime/build. Continuing with soft AES.\n";
     }
   }
@@ -612,8 +720,8 @@ void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
   bool want_full_mem = config.full_mem;
   bool want_large_pages = config.huge_pages && platform_supports_large_pages_hint();
 
-  auto make_flags = [&](bool full_mem, bool large_pages) {
-    randomx_flags flags = base_flags;
+  auto make_flags = [&](randomx_flags base, bool full_mem, bool large_pages) {
+    randomx_flags flags = base;
     if (full_mem) {
       flags = static_cast<randomx_flags>(flags | RANDOMX_FLAG_FULL_MEM);
     }
@@ -624,44 +732,52 @@ void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
   };
 
   std::string reason;
+  randomx_flags active_base_flags = base_flags;
   auto try_current = [&]() {
-    return try_init_randomx_once(make_flags(want_full_mem, want_large_pages), want_full_mem, init_threads, &reason);
+    return try_init_randomx_once(
+      make_flags(active_base_flags, want_full_mem, want_large_pages),
+      want_full_mem,
+      init_threads,
+      &reason);
   };
 
   if (try_current()) {
     return;
   }
 
-  if ((base_flags & RANDOMX_FLAG_HARD_AES) != 0) {
-    std::cerr << "[RANDOMX] Falling back: HARD_AES init failed (" << reason << "). Retrying with soft AES.\n";
-    base_flags = static_cast<randomx_flags>(base_flags & ~RANDOMX_FLAG_HARD_AES);
-    if (try_current()) {
-      return;
-    }
-  }
-
-  if ((base_flags & RANDOMX_FLAG_JIT) != 0) {
-    std::cerr << "[RANDOMX] Falling back: JIT init failed (" << reason << "). Retrying without JIT.\n";
-    base_flags = static_cast<randomx_flags>(base_flags & ~RANDOMX_FLAG_JIT);
-    if ((base_flags & RANDOMX_FLAG_SECURE) != 0) {
-      base_flags = static_cast<randomx_flags>(base_flags & ~RANDOMX_FLAG_SECURE);
-    }
-    if (try_current()) {
-      return;
-    }
-  }
-
+  // Prefer preserving HARD_AES/JIT before disabling them; large page privilege failures
+  // are common and should not force AES fallback.
   if (want_large_pages) {
     std::cerr << "[RANDOMX] Falling back: large pages unavailable (" << reason << "). Retrying without large pages.\n";
     want_large_pages = false;
-    if (try_init_randomx_once(make_flags(want_full_mem, false), want_full_mem, init_threads, &reason)) {
+    if (try_current()) {
+      return;
+    }
+  }
+
+  if ((active_base_flags & RANDOMX_FLAG_HARD_AES) != 0) {
+    std::cerr << "[RANDOMX] Falling back: HARD_AES init failed (" << reason << "). Retrying with soft AES.\n";
+    active_base_flags = static_cast<randomx_flags>(active_base_flags & ~RANDOMX_FLAG_HARD_AES);
+    if (try_current()) {
+      return;
+    }
+  }
+
+  if ((active_base_flags & RANDOMX_FLAG_JIT) != 0) {
+    std::cerr << "[RANDOMX] Falling back: JIT init failed (" << reason << "). Retrying without JIT.\n";
+    active_base_flags = static_cast<randomx_flags>(active_base_flags & ~RANDOMX_FLAG_JIT);
+    if ((active_base_flags & RANDOMX_FLAG_SECURE) != 0) {
+      active_base_flags = static_cast<randomx_flags>(active_base_flags & ~RANDOMX_FLAG_SECURE);
+    }
+    if (try_current()) {
       return;
     }
   }
 
   if (want_full_mem) {
     std::cerr << "[RANDOMX] Falling back: full-memory mode unavailable (" << reason << "). Retrying in light mode.\n";
-    if (try_init_randomx_once(make_flags(false, false), false, init_threads, &reason)) {
+    want_full_mem = false;
+    if (try_current()) {
       std::cerr << "[RANDOMX] Light mode enabled. Hashrate will be lower.\n";
       return;
     }
@@ -752,6 +868,9 @@ HashingCapabilityProfile hashing_capability_profile() {
   profile.randomx = true;
   profile.jit = (flags & RANDOMX_FLAG_JIT) != 0;
   profile.hard_aes = (flags & RANDOMX_FLAG_HARD_AES) != 0;
+  if (!profile.hard_aes && hard_aes_runtime_probe_supported() && hard_aes_runtime_probe()) {
+    profile.hard_aes = true;
+  }
   profile.secure = (flags & RANDOMX_FLAG_SECURE) != 0;
   profile.argon2_avx2 = (flags & RANDOMX_FLAG_ARGON2_AVX2) != 0;
   profile.argon2_ssse3 = (flags & RANDOMX_FLAG_ARGON2_SSSE3) != 0;

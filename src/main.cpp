@@ -9,6 +9,7 @@
 #include <atomic>
 #include <csignal>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -34,6 +35,13 @@ void handle_signal(int) {
   if (g_miner != nullptr) {
     g_miner->request_stop();
   }
+}
+
+[[noreturn]] void force_exit_now() {
+#ifdef _WIN32
+  (void)TerminateProcess(GetCurrentProcess(), 0);
+#endif
+  std::_Exit(0);
 }
 
 bool maybe_enable_ansi() {
@@ -141,9 +149,14 @@ private:
   }
 
   void handle_hotkey(unsigned char ch) {
+    if (ch == 17) { // Ctrl+Q
+      trigger_stop();
+      force_exit_now();
+    }
+
     if (ch == static_cast<unsigned char>('q') || ch == static_cast<unsigned char>('Q')) {
       trigger_stop();
-      return;
+      force_exit_now();
     }
 
     if (miner_ == nullptr) {
