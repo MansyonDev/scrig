@@ -4,11 +4,10 @@ namespace scrig {
 
 void apply_platform_default_config(Config& config) {
   config.randomx_huge_pages = false;
+  config.randomx_secure = true;
   config.randomx_macos_unsafe = true;
   config.numa_bind = false;
   config.performance_cores_only = false;
-  config.auto_tune_startup = true;
-  config.auto_tune_seconds = 36;
 }
 
 const char* platform_profile_name() {
@@ -38,6 +37,11 @@ void apply_platform_runtime_safety(Config& config, std::vector<std::string>& not
     config.randomx_full_mem = false;
     notes.push_back(
       "randomx_full_mem disabled on macOS stability profile (set randomx_macos_unsafe=true to force full_mem)");
+  }
+
+  if (config.randomx_jit && !config.randomx_secure) {
+    config.randomx_secure = true;
+    notes.push_back("randomx_secure enabled on macOS when JIT is active to avoid bus error crashes");
   }
 }
 

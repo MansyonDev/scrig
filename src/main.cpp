@@ -103,10 +103,6 @@ std::vector<std::string> sanitize_runtime_config(scrig::Config& config) {
   if (config.randomx_pipeline_batch > 0) {
     notes.push_back("randomx_pipeline_batch preset=" + std::to_string(config.randomx_pipeline_batch));
   }
-  if (config.auto_tune_startup) {
-    notes.push_back(
-      "startup auto-tune enabled: duration=" + std::to_string(config.auto_tune_seconds) + "s");
-  }
 
   if (config.pin_threads && !scrig::thread_pinning_supported()) {
     config.pin_threads = false;

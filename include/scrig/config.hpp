@@ -27,8 +27,6 @@ struct Config {
   bool pin_threads = true;
   bool numa_bind = false;
   bool performance_cores_only = false;
-  bool auto_tune_startup = false;
-  uint32_t auto_tune_seconds = 30;
   uint32_t randomx_pipeline_batch = 0;
 
   bool randomx_full_mem = true;

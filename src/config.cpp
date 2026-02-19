@@ -20,8 +20,6 @@ Config default_config() {
   config.pin_threads = thread_pinning_supported();
   config.numa_bind = false;
   config.performance_cores_only = false;
-  config.auto_tune_startup = false;
-  config.auto_tune_seconds = 30;
   config.randomx_pipeline_batch = 0;
   config.randomx_huge_pages = huge_pages_supported_on_platform();
   config.use_chain_events = true;
@@ -109,8 +107,6 @@ std::string config_to_json_text(const Config& config) {
     write_field(out, "numa_bind", json_bool(config.numa_bind));
   }
   write_field(out, "performance_cores_only", json_bool(config.performance_cores_only));
-  write_field(out, "auto_tune_startup", json_bool(config.auto_tune_startup));
-  write_field(out, "auto_tune_seconds", std::to_string(config.auto_tune_seconds));
   write_field(out, "randomx_pipeline_batch", std::to_string(config.randomx_pipeline_batch));
   write_field(out, "randomx_full_mem", json_bool(config.randomx_full_mem));
   if (include_randomx_huge_pages_key()) {
@@ -154,8 +150,6 @@ Config config_from_json(const JsonValue& value) {
   if (const auto it = obj.find("pin_threads"); it != obj.end()) config.pin_threads = it->second.as_bool();
   if (const auto it = obj.find("numa_bind"); it != obj.end()) config.numa_bind = it->second.as_bool();
   if (const auto it = obj.find("performance_cores_only"); it != obj.end()) config.performance_cores_only = it->second.as_bool();
-  if (const auto it = obj.find("auto_tune_startup"); it != obj.end()) config.auto_tune_startup = it->second.as_bool();
-  if (const auto it = obj.find("auto_tune_seconds"); it != obj.end()) config.auto_tune_seconds = static_cast<uint32_t>(it->second.as_uint64());
   if (const auto it = obj.find("randomx_pipeline_batch"); it != obj.end()) config.randomx_pipeline_batch = static_cast<uint32_t>(it->second.as_uint64());
   if (const auto it = obj.find("randomx_full_mem"); it != obj.end()) config.randomx_full_mem = it->second.as_bool();
   if (const auto it = obj.find("randomx_huge_pages"); it != obj.end()) config.randomx_huge_pages = it->second.as_bool();
@@ -241,9 +235,6 @@ void validate_config(const Config& config) {
   }
   if (config.mode != "solo" && config.mode != "pool") {
     throw std::runtime_error("config mode must be 'solo' or 'pool'");
-  }
-  if (config.auto_tune_seconds == 0 || config.auto_tune_seconds > 300) {
-    throw std::runtime_error("config auto_tune_seconds must be between 1 and 300");
   }
   if (config.randomx_pipeline_batch > 128) {
     throw std::runtime_error("config randomx_pipeline_batch must be <= 128");
