@@ -1,6 +1,7 @@
 #include "scrig/node_client.hpp"
 
 #include "scrig/json.hpp"
+#include "scrig/net_platform.hpp"
 
 #include <array>
 #include <cstdint>
@@ -11,99 +12,42 @@
 #include <unordered_set>
 #include <vector>
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-
 namespace scrig {
 
 namespace {
 
-#ifdef _WIN32
-using SocketHandle = SOCKET;
-constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
-#else
-using SocketHandle = int;
-constexpr SocketHandle kInvalidSocket = -1;
-#endif
+const SocketHandle kInvalidSocket = invalid_socket_handle();
 
 std::mutex g_active_sockets_mutex;
 std::unordered_set<SocketHandle> g_active_sockets;
 
-#ifdef _WIN32
-void initialize_winsock_once() {
-  static bool initialized = false;
-  static std::mutex lock;
-
-  std::lock_guard<std::mutex> guard(lock);
-  if (initialized) {
-    return;
-  }
-
-  WSADATA wsa_data{};
-  if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
-    throw std::runtime_error("WSAStartup failed");
-  }
-
-  initialized = true;
-}
-#endif
-
 void interrupt_socket(SocketHandle sock) {
-  if (sock == kInvalidSocket) {
-    return;
-  }
-#ifdef _WIN32
-  (void)shutdown(sock, SD_BOTH);
-#else
-  (void)shutdown(sock, SHUT_RDWR);
-#endif
+  interrupt_socket_handle(sock);
 }
 
 void close_socket(SocketHandle sock) {
-  if (sock == kInvalidSocket) {
-    return;
-  }
-#ifdef _WIN32
-  closesocket(sock);
-#else
-  close(sock);
-#endif
+  close_socket_handle(sock);
 }
 
 void write_all(SocketHandle sock, const uint8_t* data, size_t len) {
   size_t sent = 0;
   while (sent < len) {
-#ifdef _WIN32
-    const int n = send(sock, reinterpret_cast<const char*>(data + sent), static_cast<int>(len - sent), 0);
-#else
-    const ssize_t n = send(sock, data + sent, len - sent, 0);
-#endif
-    if (n <= 0) {
+    const size_t n = send_socket_data(sock, data + sent, len - sent);
+    if (n == 0) {
       throw std::runtime_error("socket send failed");
     }
-    sent += static_cast<size_t>(n);
+    sent += n;
   }
 }
 
 void read_all(SocketHandle sock, uint8_t* data, size_t len) {
   size_t received = 0;
   while (received < len) {
-#ifdef _WIN32
-    const int n = recv(sock, reinterpret_cast<char*>(data + received), static_cast<int>(len - received), 0);
-#else
-    const ssize_t n = recv(sock, data + received, len - received, 0);
-#endif
-    if (n <= 0) {
+    const size_t n = recv_socket_data(sock, data + received, len - received);
+    if (n == 0) {
       throw std::runtime_error("socket recv failed");
     }
-    received += static_cast<size_t>(n);
+    received += n;
   }
 }
 
@@ -176,48 +120,8 @@ void NodeClient::disconnect() {
 }
 
 void NodeClient::open_socket_locked() {
-#ifdef _WIN32
-  initialize_winsock_once();
-#endif
-
-  const std::string port_str = std::to_string(port_);
-
-  addrinfo hints{};
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_protocol = IPPROTO_TCP;
-
-  addrinfo* result = nullptr;
-  if (getaddrinfo(host_.c_str(), port_str.c_str(), &hints, &result) != 0) {
-    throw std::runtime_error("failed to resolve node host");
-  }
-
-  SocketHandle sock = kInvalidSocket;
-  for (auto* ptr = result; ptr != nullptr; ptr = ptr->ai_next) {
-    sock = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
-    if (sock == kInvalidSocket) {
-      continue;
-    }
-
-#ifdef _WIN32
-    const int addr_len = static_cast<int>(ptr->ai_addrlen);
-#else
-    const socklen_t addr_len = static_cast<socklen_t>(ptr->ai_addrlen);
-#endif
-
-    if (::connect(sock, ptr->ai_addr, addr_len) == 0) {
-      break;
-    }
-
-    close_socket(sock);
-    sock = kInvalidSocket;
-  }
-
-  freeaddrinfo(result);
-
-  if (sock == kInvalidSocket) {
-    throw std::runtime_error("failed to connect to node");
-  }
+  initialize_network_stack_once();
+  const SocketHandle sock = connect_tcp_socket(host_, port_);
 
   socket_fd_ = static_cast<std::intptr_t>(sock);
   {

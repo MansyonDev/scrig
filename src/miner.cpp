@@ -13,6 +13,7 @@
 #include <exception>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <thread>
 
@@ -79,7 +80,8 @@ uint64_t next_nonce_base() {
 }
 
 inline void write_nonce_le(uint8_t* dest, uint64_t nonce) {
-#if defined(_WIN32) || defined(__LITTLE_ENDIAN__) || \
+#if defined(__LITTLE_ENDIAN__) || \
+  (defined(_MSC_VER) && !defined(__clang__)) || \
   (defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__))
   std::memcpy(dest, &nonce, sizeof(nonce));
 #else
@@ -882,23 +884,41 @@ void Miner::maybe_auto_tune_startup() {
   }
 
   const uint32_t logical = logical_cpu_count();
+  const uint32_t physical = physical_cpu_count();
+  const uint32_t perf_logical = performance_core_logical_count();
+  const uint32_t perf_physical = performance_core_physical_count();
   const uint32_t current_threads = std::max<uint32_t>(1U, config_.threads);
   const uint32_t recommended_threads = std::max<uint32_t>(
     1U,
     recommended_mining_threads(config_.performance_cores_only));
   const uint32_t requested_total_seconds = std::clamp<uint32_t>(config_.auto_tune_seconds, 6U, 120U);
 
-  std::vector<uint32_t> thread_candidates{
-    current_threads,
-    recommended_threads,
-    recommended_threads > 1 ? (recommended_threads - 1U) : 1U,
-    std::min<uint32_t>(logical, recommended_threads + 1U),
+  std::set<uint32_t> thread_candidates_set;
+  const auto push_thread_candidate = [&](uint32_t candidate) {
+    if (candidate == 0) {
+      return;
+    }
+    const uint32_t bounded = std::clamp<uint32_t>(candidate, 1U, std::max<uint32_t>(1U, logical));
+    thread_candidates_set.insert(bounded);
   };
-  for (auto& t : thread_candidates) {
-    t = std::clamp<uint32_t>(t, 1U, std::max<uint32_t>(1U, logical));
+
+  push_thread_candidate(current_threads);
+  push_thread_candidate(recommended_threads);
+  push_thread_candidate(recommended_threads > 2U ? (recommended_threads - 2U) : 1U);
+  push_thread_candidate(recommended_threads > 1U ? (recommended_threads - 1U) : 1U);
+  push_thread_candidate(recommended_threads + 1U);
+  push_thread_candidate(recommended_threads + 2U);
+  push_thread_candidate(physical);
+  push_thread_candidate(logical);
+  push_thread_candidate(logical > 3U ? (logical - 2U) : logical);
+  push_thread_candidate(logical >= 4U ? (logical / 2U) : logical);
+
+  if (hybrid_topology_detected()) {
+    push_thread_candidate(perf_physical);
+    push_thread_candidate(perf_logical);
   }
-  std::sort(thread_candidates.begin(), thread_candidates.end());
-  thread_candidates.erase(std::unique(thread_candidates.begin(), thread_candidates.end()), thread_candidates.end());
+
+  std::vector<uint32_t> thread_candidates(thread_candidates_set.begin(), thread_candidates_set.end());
 
   std::vector<uint32_t> batch_candidates{current_pipeline_batch(), 8U, 16U, 24U, 32U};
   for (auto& b : batch_candidates) {

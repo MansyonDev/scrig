@@ -2,6 +2,7 @@
 
 #include "scrig/json.hpp"
 #include "scrig/perf.hpp"
+#include "scrig/platform.hpp"
 #include "scrig/types.hpp"
 
 #include <fstream>
@@ -31,65 +32,28 @@ Config default_config() {
   config.refresh_interval_ms = 500;
   config.randomx_jit = true;
   config.randomx_full_mem = true;
-
-#if defined(__APPLE__)
-  config.randomx_huge_pages = false;
-  config.randomx_macos_unsafe = true;
-#elif defined(_WIN32)
-  config.numa_bind = false;
-  config.performance_cores_only = true;
-  config.auto_tune_startup = true;
-#elif defined(__linux__)
-  config.numa_bind = numa_binding_supported() && numa_detected();
-  config.performance_cores_only = true;
-  config.auto_tune_startup = true;
-#endif
+  apply_platform_default_config(config);
 
   return config;
 }
 
-const char* platform_profile_name() {
-#if defined(__APPLE__)
-  return "macos-performance";
-#elif defined(_WIN32)
-  return "windows-performance";
-#elif defined(__linux__)
-  return "linux-performance";
-#else
-  return "generic";
-#endif
-}
-
-const char* platform_config_comment() {
-#if defined(__APPLE__)
-  return "macOS Specific Config";
-#elif defined(_WIN32)
-  return "Windows Specific Config";
-#elif defined(__linux__)
-  return "Linux Specific Config";
-#else
-  return "Generic OS Config";
-#endif
-}
-
 bool include_pin_threads_key() {
-  return thread_pinning_supported();
+  const auto layout = platform_config_layout();
+  return layout.include_pin_threads && thread_pinning_supported();
 }
 
 bool include_numa_bind_key() {
-  return numa_binding_supported();
+  const auto layout = platform_config_layout();
+  return layout.include_numa_bind && numa_binding_supported();
 }
 
 bool include_randomx_huge_pages_key() {
-  return huge_pages_supported_on_platform();
+  const auto layout = platform_config_layout();
+  return layout.include_randomx_huge_pages && huge_pages_supported_on_platform();
 }
 
 bool include_randomx_macos_unsafe_key() {
-#if defined(__APPLE__)
-  return true;
-#else
-  return false;
-#endif
+  return platform_config_layout().include_randomx_macos_unsafe;
 }
 
 std::string json_scalar(const std::string& value) {

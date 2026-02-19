@@ -1,14 +1,11 @@
 #include "scrig/ui.hpp"
+#include "scrig/runtime_platform.hpp"
 
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <unordered_map>
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 namespace scrig {
 
@@ -181,27 +178,6 @@ void restore_cursor_position() {
   std::cout << "\x1b[u\x1b" "8";
 }
 
-#ifdef _WIN32
-void clear_console_windows() {
-  HANDLE h_out = GetStdHandle(STD_OUTPUT_HANDLE);
-  if (h_out == INVALID_HANDLE_VALUE) {
-    return;
-  }
-
-  CONSOLE_SCREEN_BUFFER_INFO csbi{};
-  if (!GetConsoleScreenBufferInfo(h_out, &csbi)) {
-    return;
-  }
-
-  const DWORD cell_count = static_cast<DWORD>(csbi.dwSize.X) * static_cast<DWORD>(csbi.dwSize.Y);
-  const COORD origin{0, 0};
-  DWORD written = 0;
-  (void)FillConsoleOutputCharacterA(h_out, ' ', cell_count, origin, &written);
-  (void)FillConsoleOutputAttribute(h_out, csbi.wAttributes, cell_count, origin, &written);
-  (void)SetConsoleCursorPosition(h_out, origin);
-}
-#endif
-
 } // namespace
 
 std::string human_hashrate(double rate) {
@@ -299,11 +275,7 @@ void render_dashboard(const UiSnapshot& s, bool colorful) {
   rows.push_back(box_border());
 
   if (!g_dashboard_ansi_enabled) {
-#ifdef _WIN32
-    clear_console_windows();
-#else
-    std::cout << "\x1b[2J\x1b[H";
-#endif
+    clear_console_fallback();
     for (const auto& row : rows) {
       std::cout << row << '\n';
     }

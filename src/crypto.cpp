@@ -1,4 +1,5 @@
 #include "scrig/consensus.hpp"
+#include "scrig/crypto_platform.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,10 +20,6 @@
 
 #ifdef _MSC_VER
 #include <intrin.h>
-#if defined(_WIN32) && (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
-#include <windows.h>
-#include <immintrin.h>
-#endif
 #endif
 
 namespace scrig {
@@ -515,94 +512,15 @@ RandomXState g_randomx_state;
 std::once_flag g_randomx_once;
 
 bool hard_aes_runtime_probe_supported() {
-#if defined(_WIN32) && defined(_MSC_VER) && \
-  (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
-  return true;
-#else
-  return false;
-#endif
+  return crypto_hard_aes_runtime_probe_supported();
 }
 
 bool hard_aes_runtime_probe() {
-#if defined(_WIN32) && defined(_MSC_VER) && \
-  (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
-  __try {
-    __m128i state = _mm_setzero_si128();
-    const __m128i key = _mm_set_epi32(0xA5A5A5A5, 0xC3C3C3C3, 0x5A5A5A5A, 0x3C3C3C3C);
-    state = _mm_aesenc_si128(state, key);
-    volatile int sink = _mm_cvtsi128_si32(state);
-    (void)sink;
-    return true;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return false;
-  }
-#else
-  return false;
-#endif
+  return crypto_hard_aes_runtime_probe();
 }
-
-#if defined(_WIN32) && defined(_MSC_VER) && \
-  (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
-bool windows_cpuid_reports_aes() {
-  int info[4] = {0, 0, 0, 0};
-  __cpuid(info, 1);
-  return (info[2] & (1 << 25)) != 0;
-}
-
-struct WindowsCpuDiag {
-  bool aes = false;
-  bool avx2 = false;
-  bool ssse3 = false;
-  bool hypervisor_present = false;
-  std::string vendor;
-  std::string hypervisor_vendor;
-};
-
-WindowsCpuDiag windows_cpu_diag() {
-  WindowsCpuDiag diag{};
-  int info[4] = {0, 0, 0, 0};
-
-  __cpuid(info, 0);
-  const int max_leaf = info[0];
-  char vendor[13] = {};
-  std::memcpy(vendor + 0, &info[1], 4);
-  std::memcpy(vendor + 4, &info[3], 4);
-  std::memcpy(vendor + 8, &info[2], 4);
-  vendor[12] = '\0';
-  diag.vendor = vendor;
-
-  if (max_leaf >= 1) {
-    __cpuid(info, 1);
-    diag.aes = (info[2] & (1 << 25)) != 0;
-    diag.ssse3 = (info[2] & (1 << 9)) != 0;
-    diag.hypervisor_present = (info[2] & (1u << 31)) != 0;
-  }
-
-  if (max_leaf >= 7) {
-    __cpuidex(info, 7, 0);
-    diag.avx2 = (info[1] & (1 << 5)) != 0;
-  }
-
-  if (diag.hypervisor_present) {
-    __cpuid(info, 0x40000000);
-    char hv_vendor[13] = {};
-    std::memcpy(hv_vendor + 0, &info[1], 4);
-    std::memcpy(hv_vendor + 4, &info[2], 4);
-    std::memcpy(hv_vendor + 8, &info[3], 4);
-    hv_vendor[12] = '\0';
-    diag.hypervisor_vendor = hv_vendor;
-  }
-
-  return diag;
-}
-#endif
 
 bool platform_supports_large_pages_hint() {
-#if defined(__APPLE__)
-  return false;
-#else
-  return true;
-#endif
+  return crypto_supports_large_pages_hint();
 }
 
 void release_randomx_state() {
@@ -696,20 +614,10 @@ void init_randomx_internal(const HashingConfig& config, uint32_t init_threads) {
       base_flags = static_cast<randomx_flags>(base_flags | RANDOMX_FLAG_HARD_AES);
       std::cerr << "[RANDOMX] HARD_AES not reported by CPUID probe; enabling after runtime AES instruction test.\n";
     } else {
-#if defined(_WIN32) && defined(_MSC_VER) && \
-  (defined(_M_X64) || defined(_M_AMD64) || defined(_M_IX86))
-      const auto diag = windows_cpu_diag();
-      std::cerr << "[RANDOMX] Windows AES diagnostics: cpuid_aes="
-                << (diag.aes ? "1" : "0")
-                << " ssse3=" << (diag.ssse3 ? "1" : "0")
-                << " avx2=" << (diag.avx2 ? "1" : "0")
-                << " hypervisor=" << (diag.hypervisor_present ? "1" : "0")
-                << " vendor=" << diag.vendor;
-      if (diag.hypervisor_present && !diag.hypervisor_vendor.empty()) {
-        std::cerr << " hypervisor_vendor=" << diag.hypervisor_vendor;
+      const auto diagnostics = crypto_hard_aes_diagnostics(probe_ok);
+      if (!diagnostics.empty()) {
+        std::cerr << diagnostics << "\n";
       }
-      std::cerr << " runtime_probe=" << (probe_ok ? "pass" : (probe_supported ? "fail" : "n/a")) << "\n";
-#endif
       std::cerr << "[RANDOMX] HARD_AES requested but unavailable on this runtime/build. Continuing with soft AES.\n";
     }
   }
