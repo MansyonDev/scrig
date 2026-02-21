@@ -826,7 +826,8 @@ void Miner::refresh_stats_loop() {
 
     const auto uptime_seconds = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::seconds>(now - start_time_).count());
-    if (uptime_seconds >= last_summary_uptime + 10ULL) {
+    const bool paused = paused_.load(std::memory_order_relaxed);
+    if (!paused && uptime_seconds >= last_summary_uptime + 10ULL) {
       last_summary_uptime = uptime_seconds;
       push_log(
         "Stats: hashrate=" + human_hashrate(current_hashrate_.load(std::memory_order_relaxed)) +
