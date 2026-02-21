@@ -16,7 +16,7 @@ namespace {
 
 Config default_config() {
   Config config;
-  config.threads = 1;
+  config.threads = 0;
   config.pin_threads = thread_pinning_supported();
   config.numa_bind = false;
   config.performance_cores_only = false;
@@ -37,17 +37,17 @@ Config default_config() {
 
 bool include_pin_threads_key() {
   const auto layout = platform_config_layout();
-  return layout.include_pin_threads && thread_pinning_supported();
+  return layout.include_pin_threads;
 }
 
 bool include_numa_bind_key() {
   const auto layout = platform_config_layout();
-  return layout.include_numa_bind && numa_binding_supported();
+  return layout.include_numa_bind;
 }
 
 bool include_randomx_huge_pages_key() {
   const auto layout = platform_config_layout();
-  return layout.include_randomx_huge_pages && huge_pages_supported_on_platform();
+  return layout.include_randomx_huge_pages;
 }
 
 bool include_randomx_macos_unsafe_key() {
@@ -189,12 +189,6 @@ Config load_or_create_config(const std::filesystem::path& path, bool& created_de
 
   std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   const auto config = config_from_json(parse_json(text));
-
-  // Keep config deterministic and grouped for easier manual editing.
-  std::ofstream out(path);
-  if (out) {
-    out << config_to_json_text(config) << '\n';
-  }
 
   return config;
 }

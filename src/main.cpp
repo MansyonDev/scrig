@@ -76,23 +76,19 @@ std::vector<std::string> sanitize_runtime_config(scrig::Config& config) {
   }
 
   if (config.pin_threads && !scrig::thread_pinning_supported()) {
-    config.pin_threads = false;
-    notes.push_back("pin_threads disabled: CPU affinity is not supported on this platform");
+    notes.push_back("pin_threads requested but CPU affinity is not supported on this platform/build");
   } else if (config.pin_threads) {
     notes.push_back("affinity profile: " + scrig::affinity_profile_summary(config.threads, 10));
   }
 
   if (config.numa_bind && !scrig::numa_binding_supported()) {
-    config.numa_bind = false;
-    notes.push_back("numa_bind disabled: NUMA binding is unavailable on this platform/build");
+    notes.push_back("numa_bind requested but NUMA binding is unavailable on this platform/build");
   } else if (config.numa_bind && !scrig::numa_detected()) {
-    config.numa_bind = false;
-    notes.push_back("numa_bind disabled: no multi-node NUMA topology detected");
+    notes.push_back("numa_bind requested but no multi-node NUMA topology was detected");
   }
 
   if (config.randomx_huge_pages && !scrig::huge_pages_supported_on_platform()) {
-    config.randomx_huge_pages = false;
-    notes.push_back("randomx_huge_pages disabled: huge pages are not supported on this platform");
+    notes.push_back("randomx_huge_pages requested but huge pages are not supported on this platform");
   } else if (config.randomx_huge_pages &&
              scrig::can_detect_huge_pages_configuration() &&
              !scrig::huge_pages_configured()) {
@@ -163,7 +159,6 @@ int main(int argc, char** argv) {
 
     const auto tuning_notes = sanitize_runtime_config(config);
     const auto hashing_caps = scrig::hashing_capability_profile();
-    scrig::save_config(cli.config_path, config);
     scrig::validate_config(config);
 
     if (cli.validate_only) {

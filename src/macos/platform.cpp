@@ -29,19 +29,16 @@ PlatformConfigLayout platform_config_layout() {
 
 void apply_platform_runtime_safety(Config& config, std::vector<std::string>& notes) {
   if (config.randomx_jit && !config.randomx_macos_unsafe) {
-    config.randomx_jit = false;
-    notes.push_back("randomx_jit disabled on macOS stability profile (set randomx_macos_unsafe=true to force jit)");
+    notes.push_back("randomx_jit requested on macOS stable profile; set randomx_macos_unsafe=true if you want to force it");
   }
 
   if (config.randomx_full_mem && !config.randomx_macos_unsafe) {
-    config.randomx_full_mem = false;
     notes.push_back(
-      "randomx_full_mem disabled on macOS stability profile (set randomx_macos_unsafe=true to force full_mem)");
+      "randomx_full_mem requested on macOS stable profile; set randomx_macos_unsafe=true if you want to force it");
   }
 
   if (config.randomx_jit && !config.randomx_secure) {
-    config.randomx_secure = true;
-    notes.push_back("randomx_secure enabled on macOS when JIT is active to avoid bus error crashes");
+    notes.push_back("randomx_jit is enabled while randomx_secure=false; this can cause bus errors on macOS");
   }
 }
 

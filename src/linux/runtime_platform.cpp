@@ -87,6 +87,18 @@ public:
   }
 
 private:
+  [[noreturn]] void hard_exit_now() {
+    trigger_stop();
+    disable_unix_raw_mode();
+    if (tty_fd_ >= 0) {
+      ::close(tty_fd_);
+      tty_fd_ = -1;
+    }
+    std::cout << "\x1b[0m\r\n";
+    std::cout.flush();
+    force_process_exit();
+  }
+
   void trigger_stop() {
     if (miner_ != nullptr) {
       miner_->request_stop();
@@ -97,13 +109,11 @@ private:
 
   void handle_hotkey(unsigned char ch) {
     if (ch == 17) {
-      trigger_stop();
-      force_process_exit();
+      hard_exit_now();
     }
 
     if (ch == static_cast<unsigned char>('q') || ch == static_cast<unsigned char>('Q')) {
-      trigger_stop();
-      force_process_exit();
+      hard_exit_now();
     }
 
     if (miner_ == nullptr) {

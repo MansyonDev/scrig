@@ -313,7 +313,8 @@ Transaction transaction_from_json(const JsonValue& value) {
 
   Transaction tx;
 
-  const auto& input_arr = require_field(obj, "inputs").as_array();
+  const JsonValue& input_value = require_field(obj, "inputs");
+  const auto& input_arr = input_value.as_array();
   tx.inputs.reserve(input_arr.size());
   for (const auto& input_value : input_arr) {
     const auto& input_obj = input_value.as_object();
@@ -327,7 +328,8 @@ Transaction transaction_from_json(const JsonValue& value) {
     tx.inputs.push_back(std::move(input));
   }
 
-  const auto& output_arr = require_field(obj, "outputs").as_array();
+  const JsonValue& output_value = require_field(obj, "outputs");
+  const auto& output_arr = output_value.as_array();
   tx.outputs.reserve(output_arr.size());
   for (const auto& output_value : output_arr) {
     const auto& output_obj = output_value.as_object();
@@ -369,7 +371,8 @@ AddressInclusionFilter address_filter_from_json(const JsonValue& value) {
   filter.num_bits = require_field(obj, "num_bits").as_uint64();
   filter.num_hashes = static_cast<uint32_t>(require_field(obj, "num_hashes").as_uint64());
 
-  const auto& bits = require_field(obj, "bits").as_array();
+  const JsonValue& bits_value = require_field(obj, "bits");
+  const auto& bits = bits_value.as_array();
   filter.bits.reserve(bits.size());
   for (const auto& entry : bits) {
     filter.bits.push_back(static_cast<uint8_t>(entry.as_uint64()));
@@ -417,19 +420,22 @@ Block block_from_json(const JsonValue& value) {
   block.timestamp = require_field(obj, "timestamp").as_uint64();
   block.nonce = require_field(obj, "nonce").as_uint64();
 
-  const auto& tx_values = require_field(obj, "transactions").as_array();
+  const JsonValue& tx_values_value = require_field(obj, "transactions");
+  const auto& tx_values = tx_values_value.as_array();
   block.transactions.reserve(tx_values.size());
   for (const auto& tx : tx_values) {
     block.transactions.push_back(transaction_from_json(tx));
   }
 
-  const auto& meta = require_field(obj, "meta").as_object();
+  const JsonValue& meta_value = require_field(obj, "meta");
+  const auto& meta = meta_value.as_object();
   block.meta.block_pow_difficulty = difficulty_target_from_json(require_field(meta, "block_pow_difficulty"));
   block.meta.tx_pow_difficulty = difficulty_target_from_json(require_field(meta, "tx_pow_difficulty"));
   block.meta.previous_block = hash_from_json(require_field(meta, "previous_block"));
   block.meta.hash = optional_hash_from_json(require_field(meta, "hash"));
 
-  const auto& merkle_root = require_field(meta, "merkle_tree_root").as_array();
+  const JsonValue& merkle_root_value = require_field(meta, "merkle_tree_root");
+  const auto& merkle_root = merkle_root_value.as_array();
   if (merkle_root.size() != 32) {
     throw std::runtime_error("merkle_tree_root must have 32 bytes");
   }
@@ -500,4 +506,3 @@ PublicKey dev_wallet() {
 }
 
 } // namespace scrig
-

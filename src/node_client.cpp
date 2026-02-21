@@ -203,7 +203,8 @@ DifficultyTarget NodeClient::initialize_pool_handshake(const PublicKey& miner_pu
 
 uint64_t NodeClient::height() {
   const auto response = send_request(JsonValue("Height"));
-  const auto& payload = get_variant_payload(response, "Height").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "Height");
+  const auto& payload = payload_value.as_object();
   const auto it = payload.find("height");
   if (it == payload.end()) {
     throw std::runtime_error("missing response Height.height");
@@ -216,7 +217,8 @@ uint64_t NodeClient::balance(const PublicKey& address) {
   JsonValue::object request{{"Balance", JsonValue(std::move(request_payload))}};
 
   const auto response = send_request(JsonValue(std::move(request)));
-  const auto& payload = get_variant_payload(response, "Balance").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "Balance");
+  const auto& payload = payload_value.as_object();
   const auto it = payload.find("balance");
   if (it == payload.end()) {
     throw std::runtime_error("missing response Balance.balance");
@@ -226,7 +228,8 @@ uint64_t NodeClient::balance(const PublicKey& address) {
 
 DifficultyInfo NodeClient::difficulty() {
   const auto response = send_request(JsonValue("Difficulty"));
-  const auto& payload = get_variant_payload(response, "Difficulty").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "Difficulty");
+  const auto& payload = payload_value.as_object();
 
   DifficultyInfo info;
 
@@ -243,7 +246,8 @@ DifficultyInfo NodeClient::difficulty() {
 
 uint64_t NodeClient::reward() {
   const auto response = send_request(JsonValue("Reward"));
-  const auto& payload = get_variant_payload(response, "Reward").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "Reward");
+  const auto& payload = payload_value.as_object();
   const auto it = payload.find("reward");
   if (it == payload.end()) {
     throw std::runtime_error("missing response Reward.reward");
@@ -256,7 +260,8 @@ std::optional<Hash> NodeClient::block_hash(uint64_t height_value) {
   JsonValue::object request{{"BlockHash", JsonValue(std::move(request_payload))}};
 
   const auto response = send_request(JsonValue(std::move(request)));
-  const auto& payload = get_variant_payload(response, "BlockHash").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "BlockHash");
+  const auto& payload = payload_value.as_object();
   const auto it = payload.find("hash");
   if (it == payload.end() || it->second.is_null()) {
     return std::nullopt;
@@ -270,7 +275,8 @@ std::optional<Block> NodeClient::block_by_hash(const Hash& hash) {
   JsonValue::object request{{"Block", JsonValue(std::move(request_payload))}};
 
   const auto response = send_request(JsonValue(std::move(request)));
-  const auto& payload = get_variant_payload(response, "Block").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "Block");
+  const auto& payload = payload_value.as_object();
   const auto it = payload.find("block");
   if (it == payload.end() || it->second.is_null()) {
     return std::nullopt;
@@ -284,7 +290,8 @@ MempoolPage NodeClient::mempool_page(uint32_t page) {
   JsonValue::object request{{"Mempool", JsonValue(std::move(request_payload))}};
 
   const auto response = send_request(JsonValue(std::move(request)));
-  const auto& payload = get_variant_payload(response, "Mempool").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "Mempool");
+  const auto& payload = payload_value.as_object();
 
   MempoolPage out;
 
@@ -325,7 +332,8 @@ std::vector<Transaction> NodeClient::mempool_all(uint32_t max_pages) {
 
 DifficultyTarget NodeClient::live_transaction_difficulty() {
   const auto response = send_request(JsonValue("LiveTransactionDifficulty"));
-  const auto& payload = get_variant_payload(response, "LiveTransactionDifficulty").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "LiveTransactionDifficulty");
+  const auto& payload = payload_value.as_object();
 
   const auto it = payload.find("live_difficulty");
   if (it == payload.end()) {
@@ -340,7 +348,8 @@ bool NodeClient::submit_block(const Block& block) {
   JsonValue::object request{{"NewBlock", JsonValue(std::move(request_payload))}};
 
   const auto response = send_request(JsonValue(std::move(request)));
-  const auto& payload = get_variant_payload(response, "NewBlock").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "NewBlock");
+  const auto& payload = payload_value.as_object();
 
   const auto it = payload.find("status");
   if (it == payload.end()) {
@@ -396,7 +405,8 @@ ChainEvent NodeClient::wait_chain_event() {
   }
 
   const auto response = decode_next_message();
-  const auto& payload = get_variant_payload(response, "ChainEvent").as_object();
+  const JsonValue& payload_value = get_variant_payload(response, "ChainEvent");
+  const auto& payload = payload_value.as_object();
 
   const auto it = payload.find("event");
   if (it == payload.end()) {

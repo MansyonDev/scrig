@@ -1271,11 +1271,6 @@ void Miner::run() {
   initialize_hashing(hash_cfg, config_.threads);
   const auto runtime_hash = hashing_runtime_profile();
   if (runtime_hash.randomx) {
-    config_.randomx_full_mem = runtime_hash.full_mem;
-    config_.randomx_huge_pages = runtime_hash.huge_pages;
-    config_.randomx_jit = runtime_hash.jit;
-    config_.randomx_hard_aes = runtime_hash.hard_aes;
-    config_.randomx_secure = runtime_hash.secure;
     if (requested_hash_cfg.hard_aes && !runtime_hash.hard_aes) {
       push_log("RandomX fallback: HARD_AES requested but disabled by runtime initialization");
     }
@@ -1288,16 +1283,9 @@ void Miner::run() {
     if (requested_hash_cfg.full_mem && !runtime_hash.full_mem) {
       push_log("RandomX fallback: full memory requested but light mode is active");
     }
-  } else {
-    config_.randomx_full_mem = false;
-    config_.randomx_huge_pages = false;
-    config_.randomx_jit = false;
-    config_.randomx_hard_aes = false;
-    config_.randomx_secure = false;
   }
 
   set_pipeline_batch(config_.randomx_pipeline_batch);
-  config_.randomx_pipeline_batch = current_pipeline_batch();
 
   start_time_ = std::chrono::steady_clock::now();
   shutdown_ui_.store(false, std::memory_order_relaxed);

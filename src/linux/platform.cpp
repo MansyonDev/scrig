@@ -4,7 +4,8 @@
 namespace scrig {
 
 void apply_platform_default_config(Config& config) {
-  config.numa_bind = numa_binding_supported() && numa_detected();
+  config.threads = 0;
+  config.numa_bind = true;
   config.performance_cores_only = false;
 }
 
