@@ -103,6 +103,10 @@ Here is an example config for Windows:
 }
 ```
 
+Important! ⚠️
+
+- For `Huge Pages` to work on Windows, you need to first enable and configure them! I highly recommend you do that, because without them miner will perform a lot worse.
+
 I highly recommend when running `pool` mode to have an local node running, because you will be able to access features like wallet balance and current block height tracking. It is not essential but recommended.
 
 ## Linux (Manually)
@@ -184,6 +188,10 @@ Here is an example config for Linux:
   "dashboard": true
 }
 ```
+
+Important! ⚠️
+
+- For `Numa Binding` and `Huge Pages` to work on Linux, you need to first enable and configure them! I highly recommend you do that, because without them miner will perform a lot worse and might even not work.
 
 I highly recommend when running `pool` mode to have an local node running, because you will be able to access features like wallet balance and current block height tracking. It is not essential but recommended.
 
