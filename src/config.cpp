@@ -16,7 +16,7 @@ namespace {
 
 Config default_config() {
   Config config;
-  config.threads = 0;
+  config.threads = 1;
   config.pin_threads = thread_pinning_supported();
   config.numa_bind = false;
   config.performance_cores_only = false;

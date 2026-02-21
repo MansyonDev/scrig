@@ -4,7 +4,7 @@ namespace scrig {
 
 void apply_platform_default_config(Config& config) {
   config.numa_bind = false;
-  config.performance_cores_only = true;
+  config.performance_cores_only = false;
 }
 
 const char* platform_profile_name() {

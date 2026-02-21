@@ -71,35 +71,6 @@ std::vector<std::string> sanitize_runtime_config(scrig::Config& config) {
   std::vector<std::string> notes;
   notes.push_back("cpu profile: " + scrig::cpu_runtime_summary());
 
-  if (config.threads == 0) {
-    const auto logical = scrig::logical_cpu_count();
-    const auto physical = scrig::physical_cpu_count();
-    config.threads = scrig::recommended_mining_threads(config.performance_cores_only);
-    if (physical > 0) {
-      notes.push_back(
-        "threads was 0; using recommended mining threads (" + std::to_string(config.threads) +
-        ", physical=" + std::to_string(physical) +
-        ", logical=" + std::to_string(logical) + ")");
-    } else {
-      notes.push_back("threads was 0; using logical CPU count (" + std::to_string(config.threads) + ")");
-    }
-  }
-
-  if (config.performance_cores_only) {
-    if (!scrig::hybrid_topology_detected()) {
-      notes.push_back("performance_cores_only requested but no hybrid topology detected; using all cores");
-      config.performance_cores_only = false;
-    } else {
-      const auto perf_logical = scrig::performance_core_logical_count();
-      if (config.threads > perf_logical) {
-        notes.push_back(
-          "threads capped to performance-core logical count (" + std::to_string(perf_logical) +
-          ") due to performance_cores_only");
-        config.threads = std::max<uint32_t>(1U, perf_logical);
-      }
-    }
-  }
-
   if (config.randomx_pipeline_batch > 0) {
     notes.push_back("randomx_pipeline_batch preset=" + std::to_string(config.randomx_pipeline_batch));
   }
@@ -207,7 +178,7 @@ int main(int argc, char** argv) {
                 << " | threads=" << config.threads << '\n';
       std::cout << "Tuning: " << scrig::platform_tuning_summary() << '\n';
       for (const auto& note : tuning_notes) {
-        std::cout << "Auto-tuning: " << note << '\n';
+        std::cout << "Runtime: " << note << '\n';
       }
       if (config.randomx_huge_pages &&
           scrig::huge_pages_supported_on_platform() &&
@@ -232,7 +203,7 @@ int main(int argc, char** argv) {
       miner.add_runtime_note("Hotkey unavailable: " + hotkey_error + ". Use Ctrl+C to quit.");
     }
     for (const auto& note : tuning_notes) {
-      miner.add_runtime_note("Auto-tuning: " + note);
+      miner.add_runtime_note("Runtime: " + note);
     }
     if (!ansi_enabled) {
       miner.add_runtime_note("Dashboard ANSI mode unavailable; using compatibility redraw");

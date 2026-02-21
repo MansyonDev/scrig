@@ -5,8 +5,6 @@
 #include <set>
 #include <string>
 
-#include <processthreadsapi.h>
-#include <winbase.h>
 #include <windows.h>
 
 namespace scrig {
