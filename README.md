@@ -1,229 +1,253 @@
-# scrig
+# SCRIG
 
-High-performance Snap Coin miner in C++ with:
-- `solo` mining against a Snap node
-- `pool` mining against `snap-coin-pool`
-- RandomX support
-- OS-aware auto-tuning and OS-specific `config.json` generation
-- Live terminal dashboard + hotkeys
-
-## Quick Start
-
-1. Get a binary from [Releases](https://github.com/MansyonDev/scrig/releases) (recommended), or build from source.
-2. Run `scrig` once to auto-generate `config.json`.
-3. Edit `wallet_address`, `mode`, and endpoints.
-4. Validate connectivity.
-5. Start mining.
+High performance all 100% Open-Source SnapCoin Miner built in C++
 
 ---
 
-## Features
+# Features 
 
-- Snap API framing and request/response compatibility
-- Pool handshake + chain event job stream
-- Multi-threaded mining with CPU affinity controls
-- Runtime optimization sanitization (unsupported flags are auto-disabled)
-- OS-specific config profile header:
-  - `"_config_comment": "macOS Specific Config"`
-  - `"_config_comment": "Windows Specific Config"`
-  - `"_config_comment": "Linux Specific Config"`
-- `--validate-node` mode
+- `solo` mining against a Snap Node
+- `pool` mining against Snap Coin Pools 
+- Full RandomX support on every device and OS
+- Clean live terminal dashboard
 - Runtime commands: `h`, `p`, `r`, `q`
+- Wallet balance and current block height tracking via active local Snap Node
+- Os Configured, Specialized and Optimized `config.json`
+- Easy to Use and Setup
+- Works on every device with every OS
+- 0% Miner Fee
+- 100% Open Source built in C++
+
+and many more...
 
 ---
 
-## Install From Releases
+# Setup and Running the Miner
 
-### macOS
+## Windows (Manually)
 
-#### GUI
-1. Open [Releases](https://github.com/MansyonDev/scrig/releases).
-2. Download the macOS archive.
-3. Extract it.
-4. Open Terminal in that folder.
-5. Run:
+1. Go to `Releases`
+2. Download the latest `windows.zip` 
+3. Unpack it and in the folder you will see `scrig.exe`
 
-```bash
-chmod +x scrig
-./scrig
-```
+## Windows (CMD)
 
-#### CLI only
+1. Open CMD
+2. Download the latest `windows.zip` via this command
 
 ```bash
-# Option A: GitHub CLI
-brew install gh
-
-gh release download --repo MansyonDev/scrig --pattern "*macos*" --dir .
-# Extract downloaded archive, then:
-chmod +x scrig
-./scrig
+curl -L -o windows.zip https://github.com/MansyonDev/scrig/releases/latest/download/windows.zip
 ```
 
-### Windows
+3. Unpack it 
 
-#### GUI
-1. Open [Releases](https://github.com/MansyonDev/scrig/releases).
-2. Download the Windows archive.
-3. Extract it.
-4. Open `cmd` or PowerShell in the extracted folder.
-5. Run:
+```bash
+tar -xf windows.zip
+```
 
-```powershell
+4. Enter the folder 
+
+```bash
+cd windows
+```
+
+When in the folder with `scrig.exe` just type this in cmd
+
+```bash
 .\scrig.exe
 ```
 
-#### CLI only (PowerShell)
-
-```powershell
-winget install --id GitHub.cli -e
-
-gh release download --repo MansyonDev/scrig --pattern "*windows*" --dir .
-# Extract archive, then:
-.\scrig.exe
-```
-
-### Linux
-
-#### GUI
-1. Open [Releases](https://github.com/MansyonDev/scrig/releases).
-2. Download the Linux archive.
-3. Extract it.
-4. Open Terminal in that folder.
-5. Run:
+You will be prompted with an error saying
 
 ```bash
-chmod +x scrig
-./scrig
+Created default config at: "config.json"
+Set wallet_address in that file, then run scrig again.
 ```
 
-#### CLI only
+Enter the `config.json` file and change:
 
-```bash
-# Option A: GitHub CLI
-sudo apt-get update
-sudo apt-get install -y gh
+- `"wallet_address":` to your snap-coin-wallet address 
+- `"mode":` if you want to mine solo change to `solo` and set your node ip and port in `"node_host":` and `"node_port":` if you want to mine in an pool change to `pool` and set your pool ip and port in `"pool_host":` and `"pool_port":`
 
-gh release download --repo MansyonDev/scrig --pattern "*linux*" --dir .
-# Extract archive, then:
-chmod +x scrig
-./scrig
-```
+Rest of the config is optional (optimizations and ui), but worth adjusting to your specific CPU.
+Here is an example config for Windows:
 
----
-
-## Build From Source (CLI)
-
-### Requirements
-
-- CMake 3.20+
-- C++20 compiler
-- Git
-
-Optional for best performance:
-- RandomX installed, or use vendored `third_party/RandomX`
-- Linux NUMA (`libnuma-dev`)
-
-### macOS
-
-```bash
-xcode-select --install
-brew install cmake
-
-git clone git@github.com:MansyonDev/scrig.git
-cd scrig
-cmake -S . -B build
-cmake --build build -j
-./build/scrig
-```
-
-### Linux (Debian/Ubuntu)
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential cmake git pkg-config
-
-# Optional NUMA
-sudo apt-get install -y libnuma-dev
-
-git clone git@github.com:MansyonDev/scrig.git
-cd scrig
-cmake -S . -B build
-cmake --build build -j
-./build/scrig
-```
-
-### Windows (Developer PowerShell)
-
-```powershell
-git clone git@github.com:MansyonDev/scrig.git
-cd scrig
-cmake -S . -B build
-cmake --build build --config Release
-.\build\Release\scrig.exe
-```
-
-### Build with explicit RandomX root
-
-```bash
-cmake -S . -B build -DRANDOMX_ROOT=/path/to/randomx/install
-cmake --build build -j
-```
-
----
-
-## First Run + Config
-
-On first launch, scrig creates `config.json` in the current working directory.
-
-Rules for every OS:
-- Config is generated for the current OS profile.
-- Unsupported optimization keys are omitted from the file.
-- Unsupported runtime flags are auto-disabled and saved back automatically.
-- Wallet must be raw base36 address text only (no wrappers).
-
-Correct wallet format:
 ```json
-"wallet_address": "2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95ghmct1wkv"
+{
+  "_config_comment": "Windows Specific Config",
+  "_profile": "windows-performance",
+  "_note": "Set wallet_address before mining.",
+
+  "wallet_address": "2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95ghmct1wkv",
+  "mode": "solo",
+
+  "node_host": "127.0.0.1",
+  "node_port": 3003,
+  "pool_host": "pool.snap-coin.net",
+  "pool_port": 3333,
+
+  "threads": 0,
+  "include_mempool_transactions": true,
+  "refresh_interval_ms": 500,
+  "use_chain_events": true,
+
+  "pin_threads": true,
+  "randomx_full_mem": true,
+  "randomx_huge_pages": false,
+  "randomx_jit": true,
+  "randomx_hard_aes": true,
+  "randomx_secure": false,
+
+  "colorful_ui": true,
+  "dashboard": true
+}
 ```
 
-Wrong wallet format:
-```json
-"wallet_address": "<wallet>"
-"wallet_address": "(wallet)"
+I highly recommend when running `pool` mode to have an local node running, because you will be able to access features like wallet balance and current block height tracking. It is not essential but recommended.
+
+## Linux (Manually)
+
+1. Go to `Releases`
+2. Download the latest `linux.zip` 
+3. Unpack it and in the folder you will see `scrig`
+
+## Linux (Terminal)
+
+1. Open Terminal
+2. Download the latest `linux.zip` via this command
+
+```bash
+curl -L -o linux.zip https://github.com/MansyonDev/scrig/releases/latest/download/linux.zip
 ```
 
-### macOS
+3. Unpack it 
 
-First run (release binary):
+```bash
+unzip linux.zip
+```
+
+4. Enter the folder 
+
+```bash
+cd linux
+```
+
+When in the folder with `scrig` just type this in the terminal
+
 ```bash
 ./scrig
 ```
 
-First run (source build):
+You will be prompted with an error saying
+
 ```bash
-./build/scrig
+Created default config at: "config.json"
+Set wallet_address in that file, then run scrig again.
 ```
 
-Edit config:
-```bash
-open -a TextEdit config.json
+Enter the `config.json` file and change:
+
+- `"wallet_address":` to your snap-coin-wallet address 
+- `"mode":` if you want to mine solo change to `solo` and set your node ip and port in `"node_host":` and `"node_port":` if you want to mine in an pool change to `pool` and set your pool ip and port in `"pool_host":` and `"pool_port":` 
+
+Rest of the config is optional (optimizations and ui), but worth adjusting to your specific CPU.
+Here is an example config for Linux:
+
+```json
+{
+  "_config_comment": "Linux Specific Config",
+  "_profile": "linux-performance",
+  "_note": "Set wallet_address before mining.",
+
+  "wallet_address": "2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95ghmct1wkv",
+  "mode": "solo",
+
+  "node_host": "127.0.0.1",
+  "node_port": 3003,
+  "pool_host": "pool.snap-coin.net",
+  "pool_port": 3333,
+
+  "threads": 0,
+  "include_mempool_transactions": true,
+  "refresh_interval_ms": 500,
+  "use_chain_events": true,
+
+  "pin_threads": true,
+  "numa_bind": true,
+  "randomx_full_mem": true,
+  "randomx_huge_pages": true,
+  "randomx_jit": true,
+  "randomx_hard_aes": true,
+  "randomx_secure": false,
+
+  "colorful_ui": true,
+  "dashboard": true
+}
 ```
 
-Typical macOS-generated config:
+I highly recommend when running `pool` mode to have an local node running, because you will be able to access features like wallet balance and current block height tracking. It is not essential but recommended.
+
+## Macos (Manually)
+
+1. Go to `Releases`
+2. Download the latest `macos.zip` 
+3. Unpack it and in the folder you will see `scrig`
+
+## Macos (Terminal)
+
+1. Open Terminal
+2. Download the latest `macos.zip` via this command
+
+```bash
+curl -L -o macos.zip https://github.com/MansyonDev/scrig/releases/latest/download/macos.zip
+```
+
+3. Unpack it 
+
+```bash
+unzip macos.zip
+```
+
+4. Enter the folder 
+
+```bash
+cd macos
+```
+
+When in the folder with `scrig` just type this in the terminal
+
+```bash
+./scrig
+```
+
+You will be prompted with an error saying
+
+```bash
+Created default config at: "config.json"
+Set wallet_address in that file, then run scrig again.
+```
+
+Enter the `config.json` file and change:
+
+- `"wallet_address":` to your snap-coin-wallet address 
+- `"mode":` if you want to mine solo change to `solo` and set your node ip and port in `"node_host":` and `"node_port":` if you want to mine in an pool change to `pool` and set your pool ip and port in `"pool_host":` and `"pool_port":` 
+
+Rest of the config is optional (optimizations and ui), but worth adjusting to your specific CPU.
+Here is an example config for Macos:
+
 ```json
 {
   "_config_comment": "macOS Specific Config",
   "_profile": "macos-stable",
   "_note": "Set wallet_address before mining.",
 
-  "wallet_address": "<PUT_YOUR_WALLET_ADDRESS>",
+  "wallet_address": "2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95ghmct1wkv",
   "mode": "solo",
 
   "node_host": "127.0.0.1",
   "node_port": 3003,
-  "pool_host": "127.0.0.1",
-  "pool_port": 3003,
+  "pool_host": "pool.snap-coin.net",
+  "pool_port": 3333,
 
   "threads": 0,
   "include_mempool_transactions": false,
@@ -242,208 +266,97 @@ Typical macOS-generated config:
 }
 ```
 
-### Windows
+Important! ⚠️
 
-First run (release binary):
-```powershell
-.\scrig.exe
-```
+- For the miner to work on Macos, the `"randomx_secure"`: must be set to `true`, and for best performance `"randomx_macos_unsafe":` should also be set to `true`
 
-First run (source build):
-```powershell
-.\build\Release\scrig.exe
-```
+I highly recommend when running `pool` mode to have an local node running, because you will be able to access features like wallet balance and current block height tracking. It is not essential but recommended.
 
-Edit config:
-```powershell
-notepad .\config.json
-```
+---
 
-Typical Windows-generated config:
-```json
-{
-  "_config_comment": "Windows Specific Config",
-  "_profile": "windows-performance",
-  "_note": "Set wallet_address before mining.",
+# Flags (optional)
 
-  "wallet_address": "<PUT_YOUR_WALLET_ADDRESS>",
-  "mode": "solo",
+Current Flags are:
 
-  "node_host": "127.0.0.1",
-  "node_port": 3003,
-  "pool_host": "127.0.0.1",
-  "pool_port": 3003,
+1. `--config <path>`
+Use a specific config file (default is config.json).
 
-  "threads": 0,
-  "include_mempool_transactions": true,
-  "refresh_interval_ms": 500,
-  "use_chain_events": true,
+2. `--validate-node`
+Validate node (and pool if mode=pool) then exit.
 
-  "pin_threads": true,
-  "randomx_full_mem": true,
-  "randomx_huge_pages": false,
-  "randomx_jit": true,
-  "randomx_hard_aes": true,
-  "randomx_secure": false,
+3. `--help`
+Show help.
 
-  "colorful_ui": true,
-  "dashboard": true
-}
-```
+Syntax:
 
-### Linux
-
-First run (release binary):
 ```bash
-./scrig
-```
-
-First run (source build):
-```bash
-./build/scrig
-```
-
-Edit config:
-```bash
-nano config.json
-```
-
-Typical Linux-generated config:
-```json
-{
-  "_config_comment": "Linux Specific Config",
-  "_profile": "linux-performance",
-  "_note": "Set wallet_address before mining.",
-
-  "wallet_address": "<PUT_YOUR_WALLET_ADDRESS>",
-  "mode": "solo",
-
-  "node_host": "127.0.0.1",
-  "node_port": 3003,
-  "pool_host": "127.0.0.1",
-  "pool_port": 3003,
-
-  "threads": 0,
-  "include_mempool_transactions": true,
-  "refresh_interval_ms": 500,
-  "use_chain_events": true,
-
-  "pin_threads": true,
-  "numa_bind": false,
-  "randomx_full_mem": true,
-  "randomx_huge_pages": false,
-  "randomx_jit": true,
-  "randomx_hard_aes": true,
-  "randomx_secure": false,
-
-  "colorful_ui": true,
-  "dashboard": true
-}
+scrig [--config <path>] [--validate-node]
 ```
 
 ---
 
-## Run Modes
+# Runtime Controls 
 
-### Solo mode
+Inside Miner Terminal:
 
-```json
-"mode": "solo"
-```
-
-Uses `node_host:node_port` for jobs + block submission.
-
-### Pool mode
-
-```json
-"mode": "pool"
-```
-
-Uses:
-- `pool_host:pool_port` for share/job protocol
-- `node_host:node_port` for chain height and wallet balance display
-
----
-
-## Validate Connectivity
-
-```bash
-./build/scrig --config config.json --validate-node
-```
-
-In pool mode, this also validates the pool handshake and pool difficulty exchange.
-
----
-
-## Runtime Controls
-
-Inside miner terminal:
-- `h` = print hashrate snapshot
+- `h` = print current hashrate 
 - `p` = pause mining
 - `r` = resume mining
-- `q` = clean quit
+- `q` = quit miner
 
 ---
 
-## Dashboard Notes
+# Dashboard/UI Notes
 
-- `Wallet (node)` is balance reported by your configured `node_host:node_port`.
-- If wallet app shows something different, check:
-  - same address
-  - same network
-  - same node/chain
+- `Mode` = tells the current mode you mine on `solo` for solo mining, `pool` for pool mining
+- `Node` = tells the current node you are connected to. 
+- `Optimization Profile` = tells the current optimizations enabled or disabled. 
+- `Height` = tells the current block height on the blockchain
+- `Threads` = tells the current active threads mining
+- `Hashrate` = tells the current hashrate
+- `Uptime` = tells how long the miner is mining for
 
-Pool mode:
-- `Shares Accepted` means accepted pool shares.
-- Shares are not immediate payouts.
-- Payout depends on pool finding blocks and payout policy.
+In Pool Mode:
 
----
+- `Shares Accpeted/Rejected` = tells how many shares have been accepted by the network and how much didn't
 
-## Troubleshooting
+In Solo Mode:
 
-### `missing CMakeCache.txt`
+- `Accepted/Rejected` = tells how many blocks have been accpeted by the network and how much didn't
 
-Run configure first:
+- `Wallet (node)` = tells your current wallet balance (works only if local node is working and correct `node_host` and `node_port` is specified in `config.json`)
+- `Last Block Hash` = tells the last block hash
+- `Status` = tells the current status of the miner (`Starting` , `Mining` , `Mining Shares` , `Paused` , `Resuming` etc.)
+- `Commands` = list of available commands for use
+- `Runtime Log` = an log of what is happening etc.
 
-```bash
-cmake -S . -B build
-cmake --build build -j
-```
+--- 
 
-### `randomx_alloc_cache failed` / RandomX startup failure
+# Donate
 
-- Check RandomX availability.
-- Try lower-risk flags in config.
-- Rebuild with explicit `-DRANDOMX_ROOT=...`.
+You can help keep motivation and further development by donating:
 
-### Height is `0` in pool mode
-
-- Check `node_host/node_port` reachability.
-- Pool mining can still work, but dashboard height needs node query access.
-
-### Terminal rendering issues
-
-- Use a modern terminal (Terminal.app, iTerm2, Windows Terminal).
-- Avoid very small terminal window sizes.
+- `Snap Coin`: `2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95qhmct1wkv`
+- `Bitcoin`: `bc1ql2qvl40qwrlrr4f6lrtmlkut4gmnhz3svm6ssq`
+- `Ethereum`: `0xe4937cEf33F76644e9099CC9f89cC2f019AA95e1`
+- `Solana`: `FnFmo1826UdUhivzw871Tgu4MWUaLvn4fzy8eoJDRf89`
 
 ---
 
-## Performance Tips
-
-- Keep `randomx_full_mem`, `randomx_jit`, `randomx_hard_aes` enabled when stable.
-- Use `threads: 0` to auto-match logical CPU count.
-- Enable huge pages where supported and configured.
-- Keep pool/event connectivity stable to avoid stale-job overhead.
+Snap Coin Website: `https://snap-coin.net`
 
 ---
 
-## Donate
+# DISCLAIMER
 
-Snap Coin : `2ra6i1cmndm5p2hrjwt0gkb87ydd3uzjj522hpz95qhmct1wkv`
+SCRIG is provided for lawful, authorized use only. By using this software, you agree that:
 
-Bitcoin : `bc1ql2qvl40qwrlrr4f6lrtmlkut4gmnhz3svm6ssq`
+1. You will use SCRIG only on devices, networks, and accounts you own or are explicitly permitted to use.
+2. You are responsible for complying with all applicable laws, regulations, and pool/node terms in your country or region.
+3. Mining performance, uptime, profitability, and rewards are not guaranteed.
+4. Mining is resource-intensive and may cause high power usage, heat, system instability, or hardware wear; you assume all related risks.
+5. You are solely responsible for securing your wallet address, keys, configuration, and system environment.
+6. Antivirus/security tools may flag mining software; you are responsible for verifying binaries and source code integrity before running.
+7. SCRIG is provided “AS IS”, without warranties of any kind, express or implied. The authors/contributors are not liable for any direct or indirect damages, losses, or claims arising from its use.
 
-Ethereum : `0xe4937cEf33F76644e9099CC9f89cC2f019AA95e1`
-
-Solana : `FnFmo1826UdUhivzw871Tgu4MWUaLvn4fzy8eoJDRf89`
+If you do not agree with these terms, do not use this software.
