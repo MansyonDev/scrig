@@ -282,6 +282,32 @@ I highly recommend when running `pool` mode to have an local node running, becau
 
 ---
 
+# Config
+
+- `"wallet_address":` = set your `snap-coin-wallet` public address to get payouts
+- `"mode":` = set your mining mode, `pool` for pool mining, `solo` for solo mining
+- `"node_host":` and `"node_port":` = set your local node ip and port 
+- `"pool_host":` and `"pool_port":` = set your pool ip and port
+- `"threads":` = set the amount of threads you want the miner to use mining. `0` will use all available
+- `"include_mempool_transactions":` = in `solo` mode, include mempool txs in the block before mining. `false` mine reward-block only. `true` fetch/cache mempool and add txs (can increase fees, slightly more template work).
+- `"refresh_interval_ms":` = set how often the miner refreshes to find new jobs, set low only if you have fast internet speed, if not leave default value: `500`
+- `"use_chain_events":` = in `solo`, use node chain-event stream to detect new blocks faster than pure polling. if disabled, solo relies on polling only.
+
+## Optimizations:
+
+- `"pin_threads":` = pin mining workers to CPU cores (affinity). can reduce scheduler jitter and improve consistency.
+- `"performance_cores_only":` = use only permorfance cores/threads when mining, can improve performance and stability on some pc, may reduce total produced hashrate by limiting the amount of threads used.
+- `"randomx_pipeline_batch":` = how many nonces a worker processes per pipelined hash batch. `0` is the default batch on (currently 16 on x64/arm64). bigger can improve throughput; too big can worsen responsiveness/stales. Scaling up to `128`
+- `"randomx_full_mem":` = use full RandomX dataset mode (higher memory, better hashrate). 
+- `"randomx_jit":` = enable RandomX JIT compiler path (really boost performance).
+- `"randomx_hard_aes":` = use hardware AES instructions (AES-NI/ARM crypto extensions). without it, miner can be buggy and not really stable with hashrate.
+
+Only on MacOS set this to `true`, on windows and linux set to `false` 
+- `"randomx_secure":` = enable RandomX secure mode flag. security/stability-oriented behavior; can sometimes trade some performance.
+- `"randomx_macos_unsafe":` = enable macos devices to mine on an better profile, a lot better performance. 
+
+---
+
 # Flags (optional)
 
 Current Flags are:
