@@ -43,7 +43,7 @@ bool socket_wait_readable(std::intptr_t raw_socket, uint32_t timeout_ms) {
 
   timeval tv{};
   timeval* ptv = nullptr;
-  if (timeout_ms != std::numeric_limits<uint32_t>::max()) {
+  if (timeout_ms != (std::numeric_limits<uint32_t>::max)()) {
     tv.tv_sec = static_cast<long>(timeout_ms / 1000U);
     tv.tv_usec = static_cast<long>((timeout_ms % 1000U) * 1000U);
     ptv = &tv;
@@ -105,20 +105,20 @@ uint64_t difficulty_to_target_le(double diff) {
   if (!(diff > 0.0)) {
     return 0;
   }
-  const long double max_u64 = static_cast<long double>(std::numeric_limits<uint64_t>::max());
+  const long double max_u64 = static_cast<long double>((std::numeric_limits<uint64_t>::max)());
   const long double raw = max_u64 / static_cast<long double>(diff);
   if (raw < 1.0L) {
     return 1;
   }
   if (raw >= max_u64) {
-    return std::numeric_limits<uint64_t>::max();
+    return (std::numeric_limits<uint64_t>::max)();
   }
   return static_cast<uint64_t>(raw);
 }
 
 uint64_t parse_target_prefix_le(const std::vector<uint8_t>& bytes) {
   uint64_t value = 0;
-  const size_t n = std::min<size_t>(8, bytes.size());
+  const size_t n = (std::min<size_t>)(8, bytes.size());
   for (size_t i = 0; i < n; ++i) {
     value |= static_cast<uint64_t>(bytes[i]) << (8U * i);
   }
@@ -127,7 +127,7 @@ uint64_t parse_target_prefix_le(const std::vector<uint8_t>& bytes) {
 
 uint64_t parse_target_prefix_be(const std::vector<uint8_t>& bytes) {
   uint64_t value = 0;
-  const size_t n = std::min<size_t>(8, bytes.size());
+  const size_t n = (std::min<size_t>)(8, bytes.size());
   for (size_t i = 0; i < n; ++i) {
     value = (value << 8U) | static_cast<uint64_t>(bytes[i]);
   }
