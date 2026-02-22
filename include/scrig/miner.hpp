@@ -2,6 +2,7 @@
 
 #include "scrig/config.hpp"
 #include "scrig/node_client.hpp"
+#include "scrig/stratum_client.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -41,6 +42,14 @@ private:
     Hash hash = Hash::zero();
   };
 
+  struct StratumShare {
+    std::string job_id;
+    std::string nonce_hex;
+    std::string nonce_hex_alt;
+    std::string result_hex;
+    uint64_t height = 0;
+  };
+
   MiningJob build_solo_job(NodeClient& client);
   MiningJob build_pool_job(const Block& pool_block, const DifficultyTarget& pool_difficulty);
 
@@ -58,6 +67,7 @@ private:
 
   void run_solo();
   void run_pool();
+  void run_pool_stratum();
 
   void refresh_stats_loop();
   void set_status(const std::string& status);

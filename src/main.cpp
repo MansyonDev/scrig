@@ -5,6 +5,7 @@
 #include "scrig/perf.hpp"
 #include "scrig/platform.hpp"
 #include "scrig/runtime_platform.hpp"
+#include "scrig/stratum_client.hpp"
 #include "scrig/types.hpp"
 #include "scrig/ui.hpp"
 
@@ -126,16 +127,40 @@ void validate_node(const scrig::Config& config) {
   }
 
   if (config.mode == "pool") {
-    scrig::NodeClient pool(config.pool_host, config.pool_port);
-    pool.connect();
-    const auto pool_diff = pool.initialize_pool_handshake(wallet);
-    std::cout << "Pool validation OK\n";
-    std::cout << "  endpoint: " << config.pool_host << ':' << config.pool_port << '\n';
-    std::cout << "  pool_difficulty[0..3]: "
-              << static_cast<int>(pool_diff[0]) << ','
-              << static_cast<int>(pool_diff[1]) << ','
-              << static_cast<int>(pool_diff[2]) << ','
-              << static_cast<int>(pool_diff[3]) << '\n';
+    if (scrig::is_stratum_pool_host(config.pool_host, config.pool_port)) {
+      scrig::StratumClient pool(config.pool_host, config.pool_port);
+      pool.connect();
+      std::string login_error;
+      if (!pool.login(config.wallet_address, "x", &login_error)) {
+        throw std::runtime_error("pool validation failed: " + login_error);
+      }
+
+      scrig::StratumJob first_job;
+      std::string poll_error;
+      if (!pool.poll_job(&first_job, 3000, &poll_error)) {
+        throw std::runtime_error("pool validation failed: " + poll_error);
+      }
+
+      std::cout << "Pool validation OK\n";
+      std::cout << "  endpoint: " << config.pool_host << ':' << config.pool_port << '\n';
+      std::cout << "  protocol: stratum\n";
+      std::cout << "  first_job_id: " << first_job.job_id << '\n';
+      std::cout << "  first_job_height: " << first_job.height << '\n';
+      std::cout << "  first_job_blob_bytes: " << first_job.blob.size() << '\n';
+      std::cout << "  first_job_target_le: " << first_job.target_le << '\n';
+    } else {
+      scrig::NodeClient pool(config.pool_host, config.pool_port);
+      pool.connect();
+      const auto pool_diff = pool.initialize_pool_handshake(wallet);
+      std::cout << "Pool validation OK\n";
+      std::cout << "  endpoint: " << config.pool_host << ':' << config.pool_port << '\n';
+      std::cout << "  protocol: snap-native\n";
+      std::cout << "  pool_difficulty[0..3]: "
+                << static_cast<int>(pool_diff[0]) << ','
+                << static_cast<int>(pool_diff[1]) << ','
+                << static_cast<int>(pool_diff[2]) << ','
+                << static_cast<int>(pool_diff[3]) << '\n';
+    }
   }
 }
 

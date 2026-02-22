@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(scrig LANGUAGES CXX)
+project(scrig VERSION 1.0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,6 +42,7 @@ add_executable(scrig
   src/crypto.cpp
   src/types.cpp
   src/node_client.cpp
+  src/stratum_client.cpp
   src/miner.cpp
   src/ui.cpp
   src/perf.cpp
@@ -76,7 +77,7 @@ endif()
 target_include_directories(scrig PRIVATE include)
 target_compile_options(scrig PRIVATE ${SCRIG_WARNING_FLAGS})
 
-target_compile_definitions(scrig PRIVATE SCRIG_VERSION=\"0.1.0\")
+target_compile_definitions(scrig PRIVATE SCRIG_VERSION=\"${PROJECT_VERSION}\")
 if(SCRIG_PORTABLE_BINARY)
   target_compile_definitions(scrig PRIVATE SCRIG_PORTABLE_BINARY=1)
   message(STATUS "Portable CPU mode enabled")

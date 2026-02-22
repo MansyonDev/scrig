@@ -11,8 +11,11 @@
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <iomanip>
 #include <limits>
 #include <mutex>
+#include <sstream>
+#include <span>
 #include <stdexcept>
 #include <thread>
 
@@ -103,6 +106,70 @@ uint32_t current_pipeline_batch() {
 
 void set_pipeline_batch(uint32_t batch) {
   g_pipeline_batch.store(clamp_pipeline_batch(batch), std::memory_order_relaxed);
+}
+
+bool stratum_hash_meets_target_le(const Hash& hash, uint64_t target_le) {
+  const auto* data = hash.bytes.data();
+  const uint64_t value =
+    static_cast<uint64_t>(data[0]) |
+    (static_cast<uint64_t>(data[1]) << 8U) |
+    (static_cast<uint64_t>(data[2]) << 16U) |
+    (static_cast<uint64_t>(data[3]) << 24U) |
+    (static_cast<uint64_t>(data[4]) << 32U) |
+    (static_cast<uint64_t>(data[5]) << 40U) |
+    (static_cast<uint64_t>(data[6]) << 48U) |
+    (static_cast<uint64_t>(data[7]) << 56U);
+  return value <= target_le;
+}
+
+bool stratum_hash_meets_target(const Hash& hash, const StratumJob& job) {
+  if (job.has_target_be) {
+    for (size_t i = 0; i < hash.bytes.size(); ++i) {
+      const uint8_t hv = hash.bytes[i];
+      const uint8_t tv = job.target_be[i];
+      if (hv < tv) {
+        return true;
+      }
+      if (hv > tv) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  return stratum_hash_meets_target_le(hash, job.target_le);
+}
+
+std::string bytes_to_hex(std::span<const uint8_t> bytes) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.resize(bytes.size() * 2);
+  for (size_t i = 0; i < bytes.size(); ++i) {
+    out[i * 2] = kHex[(bytes[i] >> 4U) & 0x0FU];
+    out[i * 2 + 1] = kHex[bytes[i] & 0x0FU];
+  }
+  return out;
+}
+
+std::string u32_to_hex_be(uint32_t v) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out(8, '0');
+  for (int i = 7; i >= 0; --i) {
+    out[static_cast<size_t>(i)] = kHex[v & 0x0FU];
+    v >>= 4U;
+  }
+  return out;
+}
+
+std::string u32_to_hex_le(uint32_t v) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out(8, '0');
+  for (size_t i = 0; i < 4; ++i) {
+    const uint8_t b = static_cast<uint8_t>((v >> (8U * i)) & 0xFFU);
+    out[i * 2] = kHex[(b >> 4U) & 0x0FU];
+    out[i * 2 + 1] = kHex[b & 0x0FU];
+  }
+  return out;
 }
 
 } // namespace
@@ -1027,6 +1094,11 @@ void Miner::run_solo() {
 }
 
 void Miner::run_pool() {
+  if (is_stratum_pool_host(config_.pool_host, config_.pool_port)) {
+    run_pool_stratum();
+    return;
+  }
+
   NodeClient submit_client(config_.pool_host, config_.pool_port);
   NodeClient event_client(config_.pool_host, config_.pool_port);
   NodeClient node_height_client(config_.node_host, config_.node_port);
@@ -1257,6 +1329,284 @@ void Miner::run_pool() {
   if (node_height_thread.joinable()) {
     node_height_thread.join();
   }
+}
+
+void Miner::run_pool_stratum() {
+  StratumClient client(config_.pool_host, config_.pool_port);
+  client.connect();
+  push_log("Connected to pool " + config_.pool_host + ":" + std::to_string(config_.pool_port));
+
+  std::string login_error;
+  if (!client.login(config_.wallet_address, "x", &login_error)) {
+    throw std::runtime_error("stratum login failed: " + login_error);
+  }
+  push_log("Stratum login accepted");
+
+  const uint32_t thread_count = std::max<uint32_t>(1U, config_.threads);
+  std::atomic<bool> quit_workers{false};
+  std::atomic<uint64_t> job_version{0};
+  std::atomic<uint64_t> latest_job_height{0};
+
+  std::mutex job_mutex;
+  std::condition_variable job_cv;
+  StratumJob active_job{};
+  bool have_job = false;
+
+  std::mutex share_mutex;
+  std::deque<StratumShare> pending_shares;
+
+  std::vector<std::thread> workers;
+  workers.reserve(thread_count);
+  for (uint32_t worker_id = 0; worker_id < thread_count; ++worker_id) {
+    workers.emplace_back([&, worker_id]() {
+      (void)apply_mining_thread_priority(worker_id, thread_count, config_.performance_cores_only);
+      if (config_.pin_threads) {
+        (void)pin_current_thread(worker_id, thread_count, config_.performance_cores_only);
+      }
+      if (config_.numa_bind) {
+        (void)bind_current_thread_numa(worker_id, thread_count);
+      }
+
+      uint64_t local_hashes = 0;
+      auto last_flush = std::chrono::steady_clock::now();
+      uint64_t observed_version = 0;
+      StratumJob local_job{};
+      std::vector<uint8_t> local_blob;
+      uint32_t nonce = static_cast<uint32_t>(next_nonce_base() + worker_id);
+
+      while (!stop_.load(std::memory_order_relaxed) && !quit_workers.load(std::memory_order_relaxed)) {
+        if (paused_.load(std::memory_order_relaxed)) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          continue;
+        }
+
+        {
+          std::unique_lock<std::mutex> lock(job_mutex);
+          job_cv.wait(lock, [&]() {
+            return quit_workers.load(std::memory_order_relaxed) ||
+                   stop_.load(std::memory_order_relaxed) ||
+                   (have_job && job_version.load(std::memory_order_relaxed) != observed_version);
+          });
+
+          if (quit_workers.load(std::memory_order_relaxed) || stop_.load(std::memory_order_relaxed)) {
+            break;
+          }
+          if (!have_job) {
+            continue;
+          }
+          observed_version = job_version.load(std::memory_order_relaxed);
+          local_job = active_job;
+        }
+
+        local_blob = local_job.blob;
+        if (local_job.nonce_offset + 4 > local_blob.size()) {
+          continue;
+        }
+
+        while (!stop_.load(std::memory_order_relaxed) &&
+               !quit_workers.load(std::memory_order_relaxed) &&
+               !paused_.load(std::memory_order_relaxed) &&
+               job_version.load(std::memory_order_relaxed) == observed_version) {
+
+          const uint32_t submit_nonce_value = nonce;
+          local_blob[local_job.nonce_offset + 0] = static_cast<uint8_t>(nonce & 0xFFU);
+          local_blob[local_job.nonce_offset + 1] = static_cast<uint8_t>((nonce >> 8U) & 0xFFU);
+          local_blob[local_job.nonce_offset + 2] = static_cast<uint8_t>((nonce >> 16U) & 0xFFU);
+          local_blob[local_job.nonce_offset + 3] = static_cast<uint8_t>((nonce >> 24U) & 0xFFU);
+          nonce += thread_count;
+
+          const Hash hash = hash_data(local_blob);
+          ++local_hashes;
+
+          if (stratum_hash_meets_target(hash, local_job)) {
+            StratumShare share;
+            share.job_id = local_job.job_id;
+            // Pools usually expect nonce in canonical hex integer form (big-endian text),
+            // not raw little-endian bytes as laid out inside the blob.
+            share.nonce_hex = u32_to_hex_be(submit_nonce_value);
+            share.nonce_hex_alt = u32_to_hex_le(submit_nonce_value);
+            share.result_hex = bytes_to_hex(std::span<const uint8_t>(hash.bytes.data(), hash.bytes.size()));
+            share.height = local_job.height;
+
+            std::lock_guard<std::mutex> lock(share_mutex);
+            pending_shares.push_back(std::move(share));
+          }
+
+          const auto now = std::chrono::steady_clock::now();
+          if (local_hashes >= kHashFlushBatch || (now - last_flush) >= kHashFlushInterval) {
+            total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
+            local_hashes = 0;
+            last_flush = now;
+          }
+        }
+
+        if (local_hashes > 0) {
+          total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
+          local_hashes = 0;
+          last_flush = std::chrono::steady_clock::now();
+        }
+      }
+
+      if (local_hashes > 0) {
+        total_hashes_.fetch_add(local_hashes, std::memory_order_relaxed);
+      }
+    });
+  }
+
+  bool initial_job_logged = false;
+  bool prefer_alt_nonce_format = false;
+  bool logged_nonce_fallback_probe_failure = false;
+  set_status("Waiting for first stratum job");
+  while (!stop_.load(std::memory_order_relaxed)) {
+    StratumJob incoming_job;
+    std::string poll_error;
+    if (client.poll_job(&incoming_job, 250, &poll_error)) {
+      std::string new_job_id;
+      bool clear_pending_on_clean = false;
+      size_t dropped_pending = 0;
+      {
+        std::lock_guard<std::mutex> lock(job_mutex);
+        clear_pending_on_clean = incoming_job.clean_jobs;
+        active_job = std::move(incoming_job);
+        new_job_id = active_job.job_id;
+        have_job = true;
+        job_version.fetch_add(1, std::memory_order_relaxed);
+        latest_job_height.store(active_job.height, std::memory_order_relaxed);
+      }
+      if (clear_pending_on_clean) {
+        std::lock_guard<std::mutex> share_lock(share_mutex);
+        dropped_pending = pending_shares.size();
+        pending_shares.clear();
+      }
+      job_cv.notify_all();
+      current_height_.store(latest_job_height.load(std::memory_order_relaxed), std::memory_order_relaxed);
+      if (!initial_job_logged) {
+        push_log("Initial stratum job received");
+        initial_job_logged = true;
+      } else {
+        push_log("Stratum job refreshed");
+      }
+      if (dropped_pending > 0) {
+        push_log("Dropped " + std::to_string(dropped_pending) + " stale share(s) after clean job");
+      }
+      set_status("Mining shares");
+    } else if (poll_error.find("timeout waiting for pool message") == std::string::npos) {
+      set_status("Pool stream issue, reconnecting");
+      push_log("Pool stream warning: " + poll_error);
+    }
+
+    StratumShare share;
+    bool have_share = false;
+    {
+      std::lock_guard<std::mutex> lock(share_mutex);
+      if (!pending_shares.empty()) {
+        share = std::move(pending_shares.front());
+        pending_shares.pop_front();
+        have_share = true;
+      }
+    }
+    if (!have_share) {
+      if (!have_job && !paused_.load(std::memory_order_relaxed)) {
+        set_status("Waiting for first stratum job");
+      }
+      continue;
+    }
+
+    bool accepted = false;
+    std::string submit_error;
+
+    bool stale_share = false;
+    {
+      std::lock_guard<std::mutex> lock(job_mutex);
+      if (have_job && share.job_id != active_job.job_id) {
+        stale_share = true;
+      }
+    }
+    if (stale_share) {
+      push_log("Dropped stale share before submit");
+      continue;
+    }
+
+    const std::string primary_nonce = prefer_alt_nonce_format ? share.nonce_hex_alt : share.nonce_hex;
+    const std::string fallback_nonce = prefer_alt_nonce_format ? share.nonce_hex : share.nonce_hex_alt;
+
+    if (!client.submit_share(
+          config_.wallet_address,
+          share.job_id,
+          primary_nonce,
+          share.result_hex,
+          &accepted,
+          &submit_error)) {
+      set_status("Submit failed, retrying");
+      push_log("Stratum submit failed: " + submit_error);
+      continue;
+    }
+
+    if (!accepted) {
+      const bool looks_target_mismatch =
+        submit_error.find("Block pow difficulty is not up to target") != std::string::npos;
+      const bool can_try_fallback =
+        looks_target_mismatch &&
+        fallback_nonce != primary_nonce &&
+        !fallback_nonce.empty();
+      if (can_try_fallback) {
+        bool fallback_accepted = false;
+        std::string fallback_error;
+        if (client.submit_share(
+              config_.wallet_address,
+              share.job_id,
+              fallback_nonce,
+              share.result_hex,
+              &fallback_accepted,
+              &fallback_error)) {
+          if (fallback_accepted) {
+            accepted = true;
+            submit_error.clear();
+            prefer_alt_nonce_format = !prefer_alt_nonce_format;
+            push_log("Pool accepted alternate nonce format; switched submit nonce encoding");
+          } else if (!fallback_error.empty()) {
+            submit_error = fallback_error;
+            if (!logged_nonce_fallback_probe_failure) {
+              push_log("Nonce fallback probe: alternate nonce encoding was also rejected");
+              logged_nonce_fallback_probe_failure = true;
+            }
+          }
+        } else if (!fallback_error.empty()) {
+          submit_error = fallback_error;
+          if (!logged_nonce_fallback_probe_failure) {
+            push_log("Nonce fallback probe: alternate nonce encoding submit failed");
+            logged_nonce_fallback_probe_failure = true;
+          }
+        }
+      }
+    }
+
+    if (accepted) {
+      accepted_.fetch_add(1, std::memory_order_relaxed);
+      if (share.height > 0) {
+        current_height_.store(share.height, std::memory_order_relaxed);
+      }
+      push_log("Pool accepted share");
+      set_status("Mining shares");
+    } else {
+      rejected_.fetch_add(1, std::memory_order_relaxed);
+      if (!submit_error.empty()) {
+        push_log("Pool rejected share: " + submit_error);
+      } else {
+        push_log("Pool rejected share");
+      }
+      set_status("Share rejected");
+    }
+  }
+
+  quit_workers.store(true, std::memory_order_relaxed);
+  job_cv.notify_all();
+  for (auto& worker : workers) {
+    if (worker.joinable()) {
+      worker.join();
+    }
+  }
+  client.disconnect();
 }
 
 void Miner::run() {
